@@ -28,6 +28,7 @@ const snap: SessionSnapshot = {
   rubrics: { accuracy: 'RUBRIC TEXT' },
   activeDimension: 'accuracy',
   cases: [{ id: 'case-1', category: 'typical', input: 'hello', pinned: false }],
+  tools: [],
   suiteKey: 'k1',
   casesKey: 'k1',
 };

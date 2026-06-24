@@ -4075,7 +4075,9 @@
     /** Score at or above which a case passes (0–10). */
     passThreshold: external_exports.number().min(0).max(10).default(6),
     /** Hard per-run spend cap, USD. */
-    spendCapUsd: external_exports.number().min(0).default(0.5)
+    spendCapUsd: external_exports.number().min(0).default(0.5),
+    /** Run each case this many times to measure run-to-run variance. */
+    samples: external_exports.number().int().min(1).max(5).default(1)
   });
   var OpenAIUsageSchema = external_exports.object({
     prompt_tokens: external_exports.number().nonnegative(),
@@ -4136,6 +4138,49 @@
   });
   var FixesSchema = external_exports.object({
     fixes: external_exports.array(FixSchema)
+  });
+  var ToolDefSchema = external_exports.object({
+    name: external_exports.string().min(1),
+    description: external_exports.string().optional(),
+    /** JSON Schema object describing the tool's parameters. */
+    parameters: external_exports.record(external_exports.unknown())
+  });
+  var ToolCallSchema = external_exports.object({
+    name: external_exports.string().min(1),
+    arguments: external_exports.unknown(),
+    rawArguments: external_exports.string().optional()
+  });
+  var ToolExpectationSchema = external_exports.object({
+    expectedTool: external_exports.string().min(1).optional(),
+    forbiddenTools: external_exports.array(external_exports.string().min(1)).optional(),
+    requiredArgs: external_exports.record(external_exports.unknown()).optional()
+  });
+  var GeneratedToolCaseSchema = external_exports.object({
+    category: CaseCategorySchema,
+    input: external_exports.string().min(1),
+    expectedTool: external_exports.string().optional(),
+    forbiddenTools: external_exports.array(external_exports.string()).optional(),
+    requiredArgs: external_exports.record(external_exports.unknown()).optional(),
+    note: external_exports.string().optional()
+  });
+  var GeneratedToolCasesSchema = external_exports.object({
+    cases: external_exports.array(GeneratedToolCaseSchema).min(1)
+  });
+  var MockResultSchema = external_exports.union([
+    external_exports.object({ value: external_exports.unknown() }),
+    external_exports.object({ error: external_exports.string() })
+  ]);
+  var MockToolSchema = external_exports.object({
+    name: external_exports.string().min(1),
+    description: external_exports.string().optional(),
+    parameters: external_exports.record(external_exports.unknown()),
+    results: external_exports.array(MockResultSchema)
+  });
+  var ScenarioSchema = external_exports.object({
+    goal: external_exports.string().min(1),
+    tools: external_exports.array(MockToolSchema),
+    maxSteps: external_exports.number().int().min(1).max(20),
+    successContains: external_exports.array(external_exports.string()).optional()
   });
 
   // src/platform/storage.ts
@@ -4219,7 +4264,8 @@
       customModel: optional(form.customModel, current.customModel),
       availableModels: current.availableModels,
       passThreshold: form.passThreshold ?? current.passThreshold,
-      spendCapUsd: form.spendCapUsd ?? current.spendCapUsd
+      spendCapUsd: form.spendCapUsd ?? current.spendCapUsd,
+      samples: form.samples ?? current.samples
     });
   }
 
@@ -4385,19 +4431,71 @@
     };
   }
 
+  // src/providers/toolStream.ts
+  function accumulateToolDeltas(acc, frags) {
+    for (const f of frags) {
+      const e = acc.get(f.index) ?? { name: "", args: "" };
+      if (f.name) e.name = f.name;
+      if (f.argsFragment) e.args += f.argsFragment;
+      acc.set(f.index, e);
+    }
+  }
+  function assembleToolCalls(acc) {
+    return [...acc.values()].filter((e) => e.name).map((e) => {
+      try {
+        return { name: e.name, arguments: JSON.parse(e.args || "{}") };
+      } catch {
+        return { name: e.name, arguments: void 0, rawArguments: e.args };
+      }
+    });
+  }
+
   // src/providers/openai.ts
   var ENDPOINT = "https://api.openai.com/v1/chat/completions";
   function parseOpenAIChunk(payload) {
     try {
       const json = JSON.parse(payload);
       const out = {};
-      const delta = json.choices?.[0]?.delta?.content;
-      if (typeof delta === "string") out.delta = delta;
+      const delta = json.choices?.[0]?.delta;
+      if (typeof delta?.content === "string") out.delta = delta.content;
       if (typeof json.usage?.total_tokens === "number") out.tokens = json.usage.total_tokens;
+      if (Array.isArray(delta?.tool_calls)) {
+        out.toolCalls = delta.tool_calls.map((tc, i) => ({
+          index: tc.index ?? i,
+          ...tc.function?.name !== void 0 ? { name: tc.function.name } : {},
+          ...tc.function?.arguments !== void 0 ? { argsFragment: tc.function.arguments } : {}
+        }));
+      }
       return out;
     } catch {
       return {};
     }
+  }
+  function toOpenAITools(tools) {
+    return tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, ...t.description ? { description: t.description } : {}, parameters: t.parameters }
+    }));
+  }
+  function toOpenAIMessages(messages) {
+    const out = [];
+    const pendingIds = [];
+    let counter = 0;
+    for (const m of messages) {
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const tool_calls = m.toolCalls.map((c) => {
+          const id = `call_${counter++}`;
+          pendingIds.push(id);
+          return { id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments ?? {}) } };
+        });
+        out.push({ role: "assistant", content: m.content || null, tool_calls });
+      } else if (m.role === "tool") {
+        out.push({ role: "tool", tool_call_id: pendingIds.shift() ?? `call_${counter++}`, content: m.content });
+      } else {
+        out.push({ role: m.role, content: m.content });
+      }
+    }
+    return out;
   }
   var OpenAIProvider = class {
     id = "openai";
@@ -4410,10 +4508,11 @@
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` },
         body: JSON.stringify({
           model: request.model,
-          messages: request.messages,
+          messages: toOpenAIMessages(request.messages),
           // Reasoning models (o-series) reject `temperature`; omit it for them.
           ...supportsTemperature("openai", request.model) ? { temperature: request.temperature ?? 0 } : {},
           max_tokens: request.maxTokens,
+          ...request.tools?.length ? { tools: toOpenAITools(request.tools) } : {},
           stream: true,
           stream_options: { include_usage: true }
         })
@@ -4425,16 +4524,23 @@
         throw new ProviderError("openai", res.status, detail, request.model);
       }
       let tokens;
+      const toolAcc = /* @__PURE__ */ new Map();
       const body = res.body;
       async function* deltas() {
         for await (const payload of iterateSSE(body)) {
           const parts = parseOpenAIChunk(payload);
           if (parts.tokens !== void 0) tokens = parts.tokens;
+          if (parts.toolCalls) accumulateToolDeltas(toolAcc, parts.toolCalls);
           if (parts.delta !== void 0) yield parts.delta;
         }
       }
       const measurement = await timeChunkStream(deltas(), startMs, clock);
-      const response = { text: measurement.text, timing: finalizeTiming(measurement, tokens) };
+      const toolCalls = assembleToolCalls(toolAcc);
+      const response = {
+        text: measurement.text,
+        timing: finalizeTiming(measurement, tokens),
+        ...toolCalls.length ? { toolCalls } : {}
+      };
       return tokens === void 0 ? response : { ...response, tokens };
     }
   };
@@ -4445,7 +4551,16 @@
     try {
       const json = JSON.parse(payload);
       const out = {};
-      if (json.type === "content_block_delta" && typeof json.delta?.text === "string") out.delta = json.delta.text;
+      const idx = json.index ?? 0;
+      if (json.type === "content_block_start" && json.content_block?.type === "tool_use") {
+        out.toolCalls = [{ index: idx, ...json.content_block.name ? { name: json.content_block.name } : {} }];
+      }
+      if (json.type === "content_block_delta") {
+        if (typeof json.delta?.text === "string") out.delta = json.delta.text;
+        if (json.delta?.type === "input_json_delta" && typeof json.delta.partial_json === "string") {
+          out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
+        }
+      }
       if (typeof json.message?.usage?.input_tokens === "number") out.inputTokens = json.message.usage.input_tokens;
       if (typeof json.usage?.output_tokens === "number") out.outputTokens = json.usage.output_tokens;
       return out;
@@ -4453,10 +4568,46 @@
       return {};
     }
   }
-  function splitSystem(messages) {
+  function toAnthropicTools(tools) {
+    return tools.map((t) => ({
+      name: t.name,
+      ...t.description ? { description: t.description } : {},
+      input_schema: t.parameters
+    }));
+  }
+  function toAnthropicMessages(messages) {
     const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
-    const rest = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
-    return { system, rest };
+    const msgs = [];
+    const idQueue = [];
+    let pending = [];
+    let counter = 0;
+    const flush = () => {
+      if (pending.length) {
+        msgs.push({ role: "user", content: pending });
+        pending = [];
+      }
+    };
+    for (const m of messages) {
+      if (m.role === "system") continue;
+      if (m.role === "tool") {
+        pending.push({ type: "tool_result", tool_use_id: idQueue.shift() ?? `toolu_${counter++}`, content: m.content });
+        continue;
+      }
+      flush();
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const blocks = m.content ? [{ type: "text", text: m.content }] : [];
+        for (const c of m.toolCalls) {
+          const id = `toolu_${counter++}`;
+          idQueue.push(id);
+          blocks.push({ type: "tool_use", id, name: c.name, input: c.arguments ?? {} });
+        }
+        msgs.push({ role: "assistant", content: blocks });
+      } else {
+        msgs.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
+      }
+    }
+    flush();
+    return { system, msgs };
   }
   var AnthropicProvider = class {
     id = "anthropic";
@@ -4464,7 +4615,7 @@
       const fetchImpl = options.fetchImpl ?? defaultFetch();
       const clock = options.clock ?? (() => performance.now());
       const startMs = clock();
-      const { system, rest } = splitSystem(request.messages);
+      const { system, msgs } = toAnthropicMessages(request.messages);
       const init2 = {
         method: "POST",
         headers: {
@@ -4479,7 +4630,8 @@
           temperature: request.temperature ?? 0,
           stream: true,
           ...system ? { system } : {},
-          messages: rest
+          ...request.tools?.length ? { tools: toAnthropicTools(request.tools) } : {},
+          messages: msgs
         })
       };
       if (options.signal) Object.assign(init2, { signal: options.signal });
@@ -4490,18 +4642,25 @@
       }
       let inTok;
       let outTok;
+      const toolAcc = /* @__PURE__ */ new Map();
       const body = res.body;
       async function* deltas() {
         for await (const payload of iterateSSE(body)) {
           const p = parseAnthropicChunk(payload);
           if (p.inputTokens !== void 0) inTok = p.inputTokens;
           if (p.outputTokens !== void 0) outTok = p.outputTokens;
+          if (p.toolCalls) accumulateToolDeltas(toolAcc, p.toolCalls);
           if (p.delta !== void 0) yield p.delta;
         }
       }
       const measurement = await timeChunkStream(deltas(), startMs, clock);
       const tokens = inTok !== void 0 || outTok !== void 0 ? (inTok ?? 0) + (outTok ?? 0) : void 0;
-      const response = { text: measurement.text, timing: finalizeTiming(measurement, tokens) };
+      const toolCalls = assembleToolCalls(toolAcc);
+      const response = {
+        text: measurement.text,
+        timing: finalizeTiming(measurement, tokens),
+        ...toolCalls.length ? { toolCalls } : {}
+      };
       return tokens === void 0 ? response : { ...response, tokens };
     }
   };
@@ -4515,15 +4674,48 @@
       const parts = json.candidates?.[0]?.content?.parts ?? [];
       const text = parts.map((p) => p.text ?? "").join("");
       if (text.length > 0) out.delta = text;
+      const calls = parts.filter((p) => p.functionCall?.name).map((p) => ({ name: p.functionCall.name, arguments: p.functionCall.args ?? {} }));
+      if (calls.length > 0) out.toolCalls = calls;
       if (typeof json.usageMetadata?.totalTokenCount === "number") out.tokens = json.usageMetadata.totalTokenCount;
       return out;
     } catch {
       return {};
     }
   }
+  function toGoogleTools(tools) {
+    return [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          ...t.description ? { description: t.description } : {},
+          parameters: t.parameters
+        }))
+      }
+    ];
+  }
+  function toResponseObject(content) {
+    try {
+      const v = JSON.parse(content);
+      return v && typeof v === "object" && !Array.isArray(v) ? v : { result: v };
+    } catch {
+      return { result: content };
+    }
+  }
   function toContents(messages) {
     const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
-    const contents = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+    const contents = [];
+    for (const m of messages) {
+      if (m.role === "system") continue;
+      if (m.role === "tool") {
+        contents.push({ role: "user", parts: [{ functionResponse: { name: m.toolName ?? "", response: toResponseObject(m.content) } }] });
+      } else if (m.role === "assistant" && m.toolCalls?.length) {
+        const parts = m.content ? [{ text: m.content }] : [];
+        for (const c of m.toolCalls) parts.push({ functionCall: { name: c.name, args: c.arguments ?? {} } });
+        contents.push({ role: "model", parts });
+      } else {
+        contents.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
+      }
+    }
     return { system, contents };
   }
   var GoogleProvider = class {
@@ -4539,6 +4731,7 @@
         body: JSON.stringify({
           contents,
           ...system ? { systemInstruction: { parts: [{ text: system }] } } : {},
+          ...request.tools?.length ? { tools: toGoogleTools(request.tools) } : {},
           generationConfig: {
             temperature: request.temperature ?? 0,
             ...request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}
@@ -4553,16 +4746,22 @@
         throw new ProviderError("google", res.status, detail, request.model);
       }
       let tokens;
+      const toolCalls = [];
       const body = res.body;
       async function* deltas() {
         for await (const payload of iterateSSE(body)) {
           const p = parseGoogleChunk(payload);
           if (p.tokens !== void 0) tokens = p.tokens;
+          if (p.toolCalls) toolCalls.push(...p.toolCalls);
           if (p.delta !== void 0) yield p.delta;
         }
       }
       const measurement = await timeChunkStream(deltas(), startMs, clock);
-      const response = { text: measurement.text, timing: finalizeTiming(measurement, tokens) };
+      const response = {
+        text: measurement.text,
+        timing: finalizeTiming(measurement, tokens),
+        ...toolCalls.length ? { toolCalls } : {}
+      };
       return tokens === void 0 ? response : { ...response, tokens };
     }
   };
@@ -4757,6 +4956,62 @@ ${intentHint}` : "",
       { model: deps.model, messages: buildEvalMessages(systemPrompt, count, intentHint), temperature: 0.4 },
       chatOptions(deps),
       (text) => parseCases(text, makeId)
+    );
+  }
+
+  // src/services/toolGen.ts
+  var defaultMakeId2 = (index) => `case-${index + 1}`;
+  function buildToolCaseMessages(systemPrompt, tools, count, intentHint) {
+    const catalog = tools.map((t) => `- ${t.name}${t.description ? `: ${t.description}` : ""} \u2014 parameters: ${JSON.stringify(t.parameters)}`).join("\n");
+    const names = tools.map((t) => t.name).join(", ");
+    const instruction = [
+      "You are litmus, designing tool-USE tests for the system prompt below and its tool catalog.",
+      `Generate ${count} cases. Each case is a realistic USER MESSAGE plus the tool behavior it should trigger.`,
+      "",
+      `Only reference tools from this catalog: ${names}.`,
+      "TOOL CATALOG:",
+      catalog,
+      "",
+      "Cover three kinds:",
+      '- typical: a clear request that SHOULD call exactly one tool. Set "expectedTool" to that tool and',
+      `  "requiredArgs" to the concrete argument values you would expect (use the tool's real parameter names).`,
+      "- edge: a boundary or ambiguous request; set expectedTool if one clearly applies.",
+      "- adversarial: a request where a destructive or wrong tool MUST be avoided, or where no tool should",
+      '  be called. Set "forbiddenTools" to the tool(s) that must NOT be called; leave expectedTool empty.',
+      "",
+      'Keep arguments concrete and realistic \u2014 never placeholders like "example" or "string".',
+      intentHint ? `
+Analysis of the prompt to ground you:
+${intentHint}` : "",
+      "",
+      "Respond with ONLY JSON, no prose and no code fences:",
+      '{"cases":[{"category":"typical|edge|adversarial","input":string,"expectedTool":string?,"forbiddenTools":[string]?,"requiredArgs":object?,"note":string?}]}'
+    ].join("\n");
+    return [
+      { role: "system", content: instruction },
+      { role: "user", content: systemPrompt }
+    ];
+  }
+  function parseToolCases(text, makeId = defaultMakeId2) {
+    const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const json = JSON.parse(cleaned);
+    return GeneratedToolCasesSchema.parse(json).cases.map((c, i) => {
+      const toolExpectations = {
+        ...c.expectedTool ? { expectedTool: c.expectedTool } : {},
+        ...c.forbiddenTools?.length ? { forbiddenTools: c.forbiddenTools } : {},
+        ...c.requiredArgs ? { requiredArgs: c.requiredArgs } : {}
+      };
+      const base = { id: makeId(i), category: c.category, input: c.input, pinned: false, toolExpectations };
+      return c.note === void 0 ? base : { ...base, note: c.note };
+    });
+  }
+  async function generateToolCases(systemPrompt, tools, count, deps, intentHint) {
+    const makeId = deps.makeId ?? defaultMakeId2;
+    return callJson(
+      deps.provider,
+      { model: deps.model, messages: buildToolCaseMessages(systemPrompt, tools, count, intentHint), temperature: 0.4 },
+      chatOptions(deps),
+      (text) => parseToolCases(text, makeId)
     );
   }
 
@@ -5038,10 +5293,207 @@ ${output}`
     );
   }
 
+  // src/services/toolAssert.ts
+  function jsonTypeOf(v) {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return "array";
+    const t = typeof v;
+    if (t === "number") return Number.isInteger(v) ? "integer" : "number";
+    if (t === "string" || t === "boolean" || t === "object") return t;
+    return "null";
+  }
+  function typeMatches(actual, expected) {
+    if (expected === "number") return actual === "number" || actual === "integer";
+    return actual === expected;
+  }
+  function validateArgsSchema(value, schema) {
+    const problems = [];
+    if ((schema["type"] ?? "object") === "object") {
+      if (jsonTypeOf(value) !== "object") {
+        return [`arguments must be an object, got ${jsonTypeOf(value)}`];
+      }
+      const obj = value;
+      const required = Array.isArray(schema["required"]) ? schema["required"] : [];
+      for (const key of required) {
+        if (!(key in obj)) problems.push(`missing required argument "${key}"`);
+      }
+      const props = schema["properties"] ?? {};
+      for (const [key, spec] of Object.entries(props)) {
+        if (key in obj && spec?.type && !typeMatches(jsonTypeOf(obj[key]), spec.type)) {
+          problems.push(`argument "${key}" should be ${spec.type}, got ${jsonTypeOf(obj[key])}`);
+        }
+      }
+    }
+    return problems;
+  }
+  function deepEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  function checkRequiredArgs(args, required) {
+    if (jsonTypeOf(args) !== "object") return ["expected arguments object for requiredArgs check"];
+    const obj = args;
+    const problems = [];
+    for (const [k, v] of Object.entries(required)) {
+      if (!(k in obj)) problems.push(`required argument "${k}" was not provided`);
+      else if (!deepEqual(obj[k], v)) problems.push(`argument "${k}" should equal ${JSON.stringify(v)}, got ${JSON.stringify(obj[k])}`);
+    }
+    return problems;
+  }
+  function assertToolCalls(calls, expectation, toolDefs = []) {
+    const reasons = [];
+    if (expectation.forbiddenTools?.length) {
+      const forbidden = new Set(expectation.forbiddenTools);
+      for (const c of calls) {
+        if (forbidden.has(c.name)) reasons.push(`forbidden tool "${c.name}" was called`);
+      }
+    }
+    const target = expectation.expectedTool ? calls.find((c) => c.name === expectation.expectedTool) : calls[0];
+    if (expectation.expectedTool && !target) {
+      reasons.push(`expected tool "${expectation.expectedTool}" was not called`);
+    }
+    if (target) {
+      if (target.arguments === void 0 && target.rawArguments !== void 0) {
+        reasons.push(`arguments for "${target.name}" were not valid JSON`);
+      } else {
+        const def = toolDefs.find((d) => d.name === target.name);
+        if (def) reasons.push(...validateArgsSchema(target.arguments, def.parameters));
+        if (expectation.requiredArgs) reasons.push(...checkRequiredArgs(target.arguments, expectation.requiredArgs));
+      }
+    }
+    const passed = reasons.length === 0;
+    return { passed, score: passed ? 10 : 0, reasons };
+  }
+  function describeToolAssert(result) {
+    return result.passed ? "Tool-call expectations met." : `Tool-call check failed: ${result.reasons.join("; ")}`;
+  }
+
+  // src/services/agentRun.ts
+  function mockRespond(tool, callIndex) {
+    if (!tool) return { result: { error: "unknown tool" }, known: false };
+    if (tool.results.length === 0) return { result: { value: {} }, known: true };
+    const idx = Math.min(callIndex, tool.results.length - 1);
+    return { result: tool.results[idx] ?? { value: {} }, known: true };
+  }
+  function resultToContent(r) {
+    return "error" in r ? JSON.stringify({ error: r.error }) : JSON.stringify(r.value ?? {});
+  }
+  async function runAgent(systemPrompt, scenario, step, signal) {
+    const toolsByName = new Map(scenario.tools.map((t) => [t.name, t]));
+    const callCounts = /* @__PURE__ */ new Map();
+    const turns = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: scenario.goal }
+    ];
+    const steps = [];
+    for (let i = 0; i < scenario.maxSteps; i++) {
+      if (signal?.aborted) return { steps, finalText: "", stopReason: "aborted" };
+      const { text, toolCalls } = await step(turns);
+      if (toolCalls.length === 0) {
+        steps.push({ modelText: text, toolCalls: [], toolResults: [] });
+        return { steps, finalText: text, stopReason: "final" };
+      }
+      const toolResults = toolCalls.map((c) => {
+        const n = callCounts.get(c.name) ?? 0;
+        callCounts.set(c.name, n + 1);
+        const tool = toolsByName.get(c.name);
+        const { result, known } = mockRespond(tool, n);
+        const argsValid = known && tool ? validateArgsSchema(c.arguments, tool.parameters).length === 0 : false;
+        return { name: c.name, result, known, argsValid };
+      });
+      steps.push({ modelText: text, toolCalls, toolResults });
+      turns.push({ role: "assistant", content: text, toolCalls });
+      for (const tr of toolResults) turns.push({ role: "tool", toolName: tr.name, content: resultToContent(tr.result) });
+    }
+    const last = steps[steps.length - 1];
+    return { steps, finalText: last?.modelText ?? "", stopReason: "max_steps" };
+  }
+  function reachedGoal(trajectory, scenario) {
+    if (trajectory.stopReason === "aborted") return { passed: false, reason: "run was aborted" };
+    if (trajectory.stopReason === "max_steps") return { passed: false, reason: `hit the ${scenario.maxSteps}-step cap without finishing` };
+    const need = scenario.successContains ?? [];
+    const text = trajectory.finalText.toLowerCase();
+    const missing = need.filter((s) => !text.includes(s.toLowerCase()));
+    if (missing.length > 0) return { passed: false, reason: `final answer missing: ${missing.join(", ")}` };
+    return { passed: true, reason: "reached the goal" };
+  }
+  function scoreScenario(trajectory, scenario) {
+    const goal = reachedGoal(trajectory, scenario);
+    const results = trajectory.steps.flatMap((s) => s.toolResults);
+    const unknown = results.filter((r) => !r.known);
+    const errors = results.filter((r) => "error" in r.result);
+    const badArgs = results.filter((r) => !r.argsValid);
+    const stepsUsed = trajectory.steps.length;
+    const goalScore = goal.passed ? 10 : 0;
+    const toolSelection = results.length ? round1((results.length - unknown.length) / results.length * 10) : 10;
+    const argumentValidity = results.length ? round1((results.length - badArgs.length) / results.length * 10) : 10;
+    const recovery = errors.length === 0 ? 10 : goal.passed ? 10 : 0;
+    const efficiency = goal.passed ? stepsUsed <= Math.ceil(scenario.maxSteps / 2) ? 10 : 6 : 0;
+    const dimensions = [
+      { dimension: "goal_completion", score: goalScore },
+      { dimension: "tool_selection", score: toolSelection },
+      { dimension: "argument_validity", score: argumentValidity },
+      { dimension: "recovery", score: recovery },
+      { dimension: "efficiency", score: efficiency }
+    ];
+    const mean2 = round1(dimensions.reduce((a, d) => a + d.score, 0) / dimensions.length);
+    const score = goal.passed ? mean2 : 0;
+    const passed = goal.passed && unknown.length === 0 && badArgs.length === 0;
+    const bits = [goal.reason, `${stepsUsed}/${scenario.maxSteps} steps`];
+    if (unknown.length) bits.push(`${unknown.length} unknown-tool call(s): ${[...new Set(unknown.map((u) => u.name))].join(", ")}`);
+    if (badArgs.length) bits.push(`${badArgs.length} invalid-argument call(s)`);
+    if (errors.length) bits.push(`recovered from ${errors.length} tool error(s)`);
+    return { passed, score, rationale: bits.join(" \xB7 "), dimensions };
+  }
+
+  // src/services/agentStep.ts
+  function toChatMessages(turns) {
+    return turns.map((t) => ({
+      role: t.role,
+      content: t.content,
+      ...t.toolCalls ? { toolCalls: t.toolCalls } : {},
+      ...t.toolName ? { toolName: t.toolName } : {}
+    }));
+  }
+  function providerStep(deps) {
+    return async (turns) => {
+      const res = await deps.provider.chat(
+        { model: deps.model, messages: toChatMessages(turns), tools: deps.tools },
+        chatOptions(deps)
+      );
+      return { text: res.text, toolCalls: res.toolCalls ?? [] };
+    };
+  }
+
   // src/core/results.ts
   var DEFAULT_PASS_THRESHOLD = 6;
   function scorePasses(score, threshold = DEFAULT_PASS_THRESHOLD) {
     return score >= threshold;
+  }
+  function foldSamples(runs, threshold = DEFAULT_PASS_THRESHOLD) {
+    const first = runs[0];
+    if (!first) throw new Error("foldSamples: no runs");
+    if (runs.length === 1) return first;
+    const scores = runs.map((r) => r.score);
+    const mean2 = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
+    const variance = scores.reduce((a, s) => a + (s - mean2) ** 2, 0) / scores.length;
+    const passRate = runs.filter((r) => scorePasses(r.score, threshold)).length / runs.length;
+    const stats = {
+      count: runs.length,
+      scores,
+      mean: mean2,
+      min: Math.min(...scores),
+      max: Math.max(...scores),
+      stdev: round1(Math.sqrt(variance)),
+      passRate
+    };
+    const spread = stats.min === stats.max ? `stable at ${mean2}` : `${stats.min}\u2013${stats.max}, \u03C3${stats.stdev}`;
+    return {
+      ...first,
+      score: mean2,
+      passed: passRate >= 0.5,
+      rationale: `${first.rationale} \xB7 ${runs.length} runs (${spread})`,
+      samples: stats
+    };
   }
   function summarizeRun(results, threshold = DEFAULT_PASS_THRESHOLD) {
     const total = results.length;
@@ -5069,19 +5521,63 @@ ${output}`
 
   // src/services/run.ts
   var ZERO_TIMING = { ttfbMs: 0, totalMs: 0, tokens: 0, tokensPerSec: 0 };
+  function toolCaseResult(evalCase, generated, deps) {
+    const assert = assertToolCalls(generated.toolCalls ?? [], evalCase.toolExpectations ?? {}, deps.tools ?? []);
+    return {
+      caseId: evalCase.id,
+      output: JSON.stringify(generated.toolCalls ?? []),
+      score: assert.score,
+      passed: assert.passed,
+      rationale: describeToolAssert(assert),
+      timing: generated.timing
+    };
+  }
+  async function scenarioCaseResult(systemPrompt, evalCase, deps) {
+    const scenario = evalCase.scenario;
+    const tools = scenario.tools.map((t) => ({
+      name: t.name,
+      ...t.description ? { description: t.description } : {},
+      parameters: t.parameters
+    }));
+    const step = providerStep({
+      provider: deps.targetProvider,
+      apiKey: deps.targetKey,
+      model: deps.target.model,
+      tools,
+      fetchImpl: deps.fetchImpl,
+      clock: deps.clock,
+      signal: deps.signal
+    });
+    const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal);
+    const verdict = scoreScenario(trajectory, scenario);
+    return {
+      caseId: evalCase.id,
+      output: JSON.stringify(trajectory),
+      score: verdict.score,
+      passed: verdict.passed,
+      rationale: verdict.rationale,
+      timing: ZERO_TIMING,
+      // multi-turn timing isn't aggregated yet
+      dimensions: verdict.dimensions
+    };
+  }
   async function runOneCase(systemPrompt, evalCase, deps) {
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
+    const isToolCase = evalCase.toolExpectations !== void 0;
     try {
+      if (evalCase.scenario) return await scenarioCaseResult(systemPrompt, evalCase, deps);
       const generated = await deps.targetProvider.chat(
         {
           model: deps.target.model,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: evalCase.input }
-          ]
+          ],
+          ...isToolCase && deps.tools ? { tools: deps.tools } : {}
         },
         chatOptions({ apiKey: deps.targetKey, fetchImpl: deps.fetchImpl, clock: deps.clock, signal: deps.signal })
       );
+      if (isToolCase) return toolCaseResult(evalCase, generated, deps);
       const verdict = await judgeOutput(systemPrompt, evalCase.input, generated.text, {
         provider: deps.judgeProvider,
         apiKey: deps.judgeKey,
@@ -5112,11 +5608,15 @@ ${output}`
     }
   }
   async function runEval(systemPrompt, cases, deps) {
+    const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
+    const samples = Math.max(1, Math.floor(deps.samples ?? 1));
     const results = [];
     for (const evalCase of cases) {
-      results.push(await runOneCase(systemPrompt, evalCase, deps));
+      const runs = [];
+      for (let s = 0; s < samples; s++) runs.push(await runOneCase(systemPrompt, evalCase, deps));
+      results.push(foldSamples(runs, threshold));
     }
-    return { results, summary: summarizeRun(results, deps.passThreshold ?? DEFAULT_PASS_THRESHOLD) };
+    return { results, summary: summarizeRun(results, threshold) };
   }
 
   // src/services/fixes.ts
@@ -5364,9 +5864,10 @@ ${systemPrompt}`,
   var CAT_CLASS = { typical: "typ", edge: "edge", adversarial: "adv" };
   function casesListHtml(cases) {
     if (cases.length === 0) return '<p class="sub">No cases yet.</p>';
-    return cases.map(
-      (c, i) => `<div class="case"><span class="cat ${CAT_CLASS[c.category]}"></span><div class="cx"><div class="ct">${c.category}</div><div class="cb">${esc(c.input)}</div></div><button class="rm" data-i="${i}" title="Remove">\u2715</button></div>`
-    ).join("");
+    return cases.map((c, i) => {
+      const tool = c.scenario ? `<span class="ctag">\u{1F916} agent \xB7 ${c.scenario.maxSteps} steps</span>` : c.toolExpectations ? `<span class="ctag">\u{1F527} ${esc(c.toolExpectations.expectedTool ?? "tool test")}</span>` : "";
+      return `<div class="case"><span class="cat ${CAT_CLASS[c.category]}"></span><div class="cx"><div class="ct">${c.category}${tool}</div><div class="cb">${esc(c.input)}</div></div><button class="rm" data-i="${i}" title="Remove">\u2715</button></div>`;
+    }).join("");
   }
   function speedStripHtml(speed) {
     return `<div class="mstrip"><div><div class="mk">TTFB</div><div class="mv">${round1(speed.ttfbMs / 1e3)}s</div></div><div><div class="mk">Avg resp</div><div class="mv">${round1(speed.avgResponseMs / 1e3)}s</div></div><div><div class="mk">Tokens/s</div><div class="mv">${speed.tokensPerSec}</div></div></div>`;
@@ -5386,7 +5887,8 @@ ${c?.input ?? ""}
 
 \u2014 ${r.rationale}`.trim();
       const idTag = `<span class="cid">${esc(r.caseId)}</span>`;
-      return `<div class="mrow"><div class="cse" title="${esc(tip)}">${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}">${r.score.toFixed(1)}</div><div class="cell">${mark}</div></div>`;
+      const spread = r.samples ? r.samples.min === r.samples.max ? `<span class="spread">\xD7${r.samples.count}</span>` : `<span class="spread">${r.samples.min}\u2013${r.samples.max}</span>` : "";
+      return `<div class="mrow"><div class="cse" title="${esc(tip)}">${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>`;
     }).join("");
     return `<div class="matrix"><div class="mhead"><div>Case</div><div>Score</div><div>P/F</div></div>${rows}</div>`;
   }
@@ -5428,6 +5930,7 @@ ${c?.input ?? ""}
   var STEPS = ["capture", "analyze", "evalprompt", "cases", "run", "results", "fixes", "versions"];
   var DEFAULT_CASE_COUNT = 12;
   var MORE_CASE_COUNT = 10;
+  var TOOL_CASE_COUNT = 6;
   var area = chromeLocal();
   var session = chromeSession();
   var store = new IndexedDbStore();
@@ -5438,7 +5941,9 @@ ${c?.input ?? ""}
     dimensions: [],
     rubrics: {},
     activeDimension: "",
+    mode: "quality",
     cases: [],
+    tools: [],
     outcome: null,
     rubricHealth: null,
     fixes: [],
@@ -5457,7 +5962,9 @@ ${c?.input ?? ""}
       dimensions: state.dimensions,
       rubrics: state.rubrics,
       activeDimension: state.activeDimension,
+      mode: state.mode,
       cases: state.cases,
+      tools: state.tools,
       suiteKey,
       casesKey
     });
@@ -5471,6 +5978,8 @@ ${c?.input ?? ""}
     state.rubrics = snap.rubrics;
     state.activeDimension = snap.activeDimension;
     state.cases = snap.cases;
+    state.tools = snap.tools ?? [];
+    if (snap.mode) setMode(snap.mode);
     suiteKey = snap.suiteKey;
     casesKey = snap.casesKey;
     el("prompt").value = snap.prompt;
@@ -5479,6 +5988,13 @@ ${c?.input ?? ""}
       targetSel.value = snap.targetValue;
       if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
     }
+    if (state.tools.length) {
+      el("toolDefs").value = JSON.stringify(state.tools, null, 2);
+      const status = el("toolDefsStatus");
+      status.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
+      status.className = "toolstatus ok";
+    }
+    populateExpectedToolSelect();
   }
   function appendCatalogGroups(sel, settings, bare) {
     for (const p of PROVIDER_ORDER) {
@@ -5645,6 +6161,32 @@ ${c?.input ?? ""}
       btn.disabled = false;
       btn.textContent = prev;
     };
+  }
+  function setMode(mode) {
+    state.mode = mode;
+    el("modeQuality").setAttribute("aria-pressed", String(mode === "quality"));
+    el("modeTools").setAttribute("aria-pressed", String(mode === "tools"));
+    el("analyzeBtn").textContent = mode === "tools" ? "Set up tool & agent tests \u2192" : "Analyze prompt \u2192";
+    persistSession();
+  }
+  function onCapturePrimary() {
+    if (state.mode === "tools") void onToToolTests();
+    else void onAnalyze();
+  }
+  async function onToToolTests() {
+    setMessage("");
+    state.prompt = el("prompt").value;
+    let ctx;
+    try {
+      ctx = await wiring();
+    } catch (e) {
+      el("keybox").classList.remove("hidden");
+      return setMessage(e instanceof Error ? e.message : "Setup needed.", "info");
+    }
+    state.target = ctx.target;
+    persistSession();
+    await renderCasesView();
+    el("toolPanel").open = true;
   }
   async function onAnalyze() {
     setMessage("");
@@ -5830,7 +6372,7 @@ ${c?.input ?? ""}
     html("casesHost", casesListHtml(state.cases));
     const { settings, target, w } = await wiring();
     const est = estimateRun({
-      caseCount: state.cases.length,
+      caseCount: state.cases.length * Math.max(1, settings.samples),
       targetModel: target.model,
       judgeModel: w.auxModel,
       analyzerModel: w.auxModel,
@@ -5843,6 +6385,10 @@ ${c?.input ?? ""}
     const over = exceedsCap(est, settings.spendCapUsd);
     el("costLine").textContent = `${formatUsd(est.estUsd)} \xB7 ${est.totalCalls} calls \xB7 cap ${formatUsd(settings.spendCapUsd)}`;
     el("runBtn").disabled = over;
+    const toolsMode = state.mode === "tools";
+    el("regenBtn").classList.toggle("hidden", toolsMode);
+    el("moreCasesBtn").classList.toggle("hidden", toolsMode);
+    el("agentPanel").classList.toggle("hidden", false);
     setMessage(over ? "Estimated cost exceeds your cap. Raise the cap or trim cases." : "", over ? "error" : "info");
     show("cases");
     return over;
@@ -5894,8 +6440,140 @@ ${existing}`
       done();
     }
   }
+  var ToolDefsSchema = external_exports.array(ToolDefSchema);
+  function maxCaseSuffix() {
+    return state.cases.reduce((m, c) => {
+      const n = Number(/(\d+)$/.exec(c.id)?.[1] ?? NaN);
+      return Number.isFinite(n) && n > m ? n : m;
+    }, 0);
+  }
+  function nextCaseId() {
+    return `case-${maxCaseSuffix() + 1}`;
+  }
+  async function onGenerateToolCases() {
+    if (state.tools.length === 0) return setMessage("Define at least one tool first.", "error");
+    const done = busy("genToolCasesBtn", "Generating\u2026");
+    try {
+      const ctx = await wiring();
+      const start = maxCaseSuffix();
+      const more = await generateToolCases(
+        state.prompt,
+        state.tools,
+        TOOL_CASE_COUNT,
+        {
+          provider: ctx.w.judgeProvider,
+          apiKey: ctx.w.judgeKey,
+          model: ctx.w.auxModel,
+          makeId: (i) => `case-${start + i + 1}`
+        },
+        analysisHint()
+      );
+      state.cases = [...state.cases, ...more];
+      persistSession();
+      const over = await renderCasesView();
+      if (!over) setMessage(`Added ${more.length} tool tests \u2014 ${state.cases.length} cases total.`);
+    } catch (err) {
+      setMessage(describeError(err), "error");
+    } finally {
+      done();
+    }
+  }
+  function populateExpectedToolSelect() {
+    const sel = el("toolExpected");
+    sel.replaceChildren();
+    const any = document.createElement("option");
+    any.value = "";
+    any.textContent = state.tools.length ? "(any / none)" : "define tools first";
+    sel.appendChild(any);
+    for (const t of state.tools) {
+      const o = document.createElement("option");
+      o.value = t.name;
+      o.textContent = t.name;
+      sel.appendChild(o);
+    }
+  }
+  function onToolDefsChanged() {
+    const raw = el("toolDefs").value.trim();
+    const status = el("toolDefsStatus");
+    if (!raw) {
+      state.tools = [];
+      status.textContent = "";
+      status.className = "toolstatus";
+      populateExpectedToolSelect();
+      persistSession();
+      return;
+    }
+    try {
+      state.tools = ToolDefsSchema.parse(JSON.parse(raw));
+      status.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
+      status.className = "toolstatus ok";
+    } catch (err) {
+      state.tools = [];
+      status.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Tool defs must be [{name, parameters}]";
+      status.className = "toolstatus err";
+    }
+    populateExpectedToolSelect();
+    persistSession();
+  }
+  async function onAddToolCase() {
+    const input = el("toolCaseInput").value.trim();
+    if (!input) return setMessage("Add a user message for the tool test.", "error");
+    const expectedTool = el("toolExpected").value;
+    const forbidden = el("toolForbidden").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const argsRaw = el("toolRequiredArgs").value.trim();
+    let requiredArgs;
+    if (argsRaw) {
+      try {
+        requiredArgs = JSON.parse(argsRaw);
+      } catch {
+        return setMessage("Required args must be valid JSON.", "error");
+      }
+    }
+    const toolExpectations = {
+      ...expectedTool ? { expectedTool } : {},
+      ...forbidden.length ? { forbiddenTools: forbidden } : {},
+      ...requiredArgs ? { requiredArgs } : {}
+    };
+    state.cases = [...state.cases, { id: nextCaseId(), category: "typical", input, pinned: false, toolExpectations }];
+    el("toolCaseInput").value = "";
+    el("toolForbidden").value = "";
+    el("toolRequiredArgs").value = "";
+    persistSession();
+    await renderCasesView();
+    setMessage(`Added tool test \u2014 ${state.cases.length} cases total.`);
+  }
+  async function onAddScenario() {
+    const raw = el("scenarioJson").value.trim();
+    const status = el("scenarioStatus");
+    if (!raw) {
+      status.textContent = "Paste a scenario JSON first.";
+      status.className = "toolstatus err";
+      return;
+    }
+    let scenario;
+    try {
+      scenario = ScenarioSchema.parse(JSON.parse(raw));
+    } catch (err) {
+      status.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Scenario needs goal, tools[], and maxSteps (1\u201320).";
+      status.className = "toolstatus err";
+      return;
+    }
+    status.textContent = `\u2713 scenario "${scenario.goal.slice(0, 40)}${scenario.goal.length > 40 ? "\u2026" : ""}" added`;
+    status.className = "toolstatus ok";
+    state.cases = [...state.cases, { id: nextCaseId(), category: "typical", input: scenario.goal, pinned: false, scenario }];
+    el("scenarioJson").value = "";
+    persistSession();
+    await renderCasesView();
+    setMessage(`Added agent scenario \u2014 ${state.cases.length} cases total.`);
+  }
   async function onRun() {
     setMessage("");
+    if (state.cases.length === 0) {
+      return setMessage(
+        state.mode === "tools" ? "Add a tool test or agent scenario first." : "No cases to run \u2014 generate some first.",
+        "error"
+      );
+    }
     show("run");
     try {
       const { settings, target, w } = await wiring();
@@ -5908,7 +6586,9 @@ ${existing}`
         judgeKey: w.judgeKey,
         judgeModel: w.auxModel,
         rubric: combineRubrics(state.rubrics) || void 0,
-        passThreshold: settings.passThreshold
+        passThreshold: settings.passThreshold,
+        samples: settings.samples,
+        ...state.tools.length ? { tools: state.tools } : {}
       });
       state.outcome = outcome;
       const combined = combineRubrics(state.rubrics) || void 0;
@@ -6084,13 +6764,14 @@ ${existing}`
     sessionVersions = [...await store.getVersions()];
     const wrap = el("versionPickerWrap");
     const sel = el("versionPicker");
-    if (sessionVersions.length < 2) {
+    const loadable = sessionVersions.filter((v) => v.text !== state.prompt);
+    if (loadable.length === 0) {
       wrap.classList.add("hidden");
       return;
     }
     const scores = /* @__PURE__ */ new Map();
     await Promise.all(
-      sessionVersions.map(async (v) => {
+      loadable.map(async (v) => {
         const run = await store.getRun(v.id);
         if (run) scores.set(v.id, run.summary.overall);
       })
@@ -6098,16 +6779,15 @@ ${existing}`
     sel.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = "Load a previous version\u2026";
+    placeholder.textContent = "Load a different version\u2026";
     sel.appendChild(placeholder);
-    for (let i = sessionVersions.length - 1; i >= 0; i--) {
-      const v = sessionVersions[i];
+    for (let i = loadable.length - 1; i >= 0; i--) {
+      const v = loadable[i];
       if (!v) continue;
       const score = scores.has(v.id) ? ` \xB7 ${round1(scores.get(v.id))}/10` : "";
-      const current = v.id === state.lastVersionId ? " (current)" : "";
       const opt = document.createElement("option");
       opt.value = v.id;
-      opt.textContent = `v${v.index} \xB7 ${v.note}${score}${current}`;
+      opt.textContent = `v${v.index} \xB7 ${v.note}${score}`;
       sel.appendChild(opt);
     }
     sel.value = "";
@@ -6122,6 +6802,7 @@ ${existing}`
     state.prompt = v.text;
     promptEl.value = v.text;
     persistSession();
+    void refreshVersionPicker();
     setMessage(
       identical ? `v${v.index}'s prompt is identical to the one already shown \u2014 nothing changed.` : `Loaded v${v.index} \u2014 edit and re-run to branch from it.`
     );
@@ -6159,6 +6840,7 @@ ${existing}`
     el("customModel").value = s.customModel ?? "";
     el("passThreshold").value = String(s.passThreshold);
     el("spendCap").value = String(s.spendCapUsd);
+    el("samples").value = String(s.samples);
     setSettingsMsg("");
     el("settingsModal").classList.remove("hidden");
   }
@@ -6183,7 +6865,8 @@ ${existing}`
         judgeModel: el("judgeModel").value,
         customModel: customRaw,
         passThreshold: Number(el("passThreshold").value),
-        spendCapUsd: Number(el("spendCap").value)
+        spendCapUsd: Number(el("spendCap").value),
+        samples: Number(el("samples").value)
       });
       await saveSettings(area, next);
       const targetSel = el("target");
@@ -6243,7 +6926,9 @@ ${existing}`
   }
   function init() {
     wirePacks();
-    el("analyzeBtn").addEventListener("click", () => void onAnalyze());
+    el("analyzeBtn").addEventListener("click", () => onCapturePrimary());
+    el("modeQuality").addEventListener("click", () => setMode("quality"));
+    el("modeTools").addEventListener("click", () => setMode("tools"));
     el("grabBtn").addEventListener("click", () => void onGrab());
     el("versionPicker").addEventListener("change", () => onPickVersion());
     el("saveKey").addEventListener("click", () => void onSaveKey());
@@ -6269,7 +6954,11 @@ ${existing}`
     el("analyzeBackBtn").addEventListener("click", () => goCapture());
     el("regenBtn").addEventListener("click", () => void showCases(true));
     el("moreCasesBtn").addEventListener("click", () => void onMoreCases());
-    el("casesBackBtn").addEventListener("click", () => show("evalprompt"));
+    el("toolDefs").addEventListener("input", () => onToolDefsChanged());
+    el("genToolCasesBtn").addEventListener("click", () => void onGenerateToolCases());
+    el("addToolCaseBtn").addEventListener("click", () => void onAddToolCase());
+    el("addScenarioBtn").addEventListener("click", () => void onAddScenario());
+    el("casesBackBtn").addEventListener("click", () => show(state.mode === "tools" ? "capture" : "evalprompt"));
     el("runBtn").addEventListener("click", () => void onRun());
     el("resultsBackBtn").addEventListener("click", () => show("cases"));
     el("fixBtn").addEventListener("click", () => void onFixes());

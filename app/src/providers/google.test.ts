@@ -61,4 +61,51 @@ describe('GoogleProvider.chat', () => {
       new GoogleProvider().chat({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'x' }] }, { apiKey: 'k', fetchImpl }),
     ).rejects.toBeInstanceOf(ProviderError);
   });
+
+  it('should serialize a multi-turn tool conversation into functionCall + functionResponse parts', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return { ok: true, status: 200, body: streamFrom(['data: {"candidates":[{"content":{"parts":[{"text":"done"}]}}]}\n']), text: async () => '' };
+    };
+    await new GoogleProvider().chat(
+      {
+        model: 'gemini-2.5-pro',
+        messages: [
+          { role: 'user', content: 'weather?' },
+          { role: 'assistant', content: '', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] },
+          { role: 'tool', toolName: 'get_weather', content: '{"tempC":18}' },
+        ],
+      },
+      { apiKey: 'g', fetchImpl, clock: fakeClock([0, 10, 20]) },
+    );
+    expect(captured!.body).toContain('"functionCall"');
+    expect(captured!.body).toContain('"functionResponse"');
+    expect(captured!.body).toContain('"role":"model"');
+  });
+
+  it('should send functionDeclarations and collect a functionCall part', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return {
+        ok: true,
+        status: 200,
+        body: streamFrom([
+          'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}]}\n',
+        ]),
+        text: async () => '',
+      };
+    };
+    const res = await new GoogleProvider().chat(
+      {
+        model: 'gemini-2.5-pro',
+        messages: [{ role: 'user', content: 'weather?' }],
+        tools: [{ name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
+      },
+      { apiKey: 'g', fetchImpl, clock: fakeClock([0, 10, 20]) },
+    );
+    expect(res.toolCalls).toEqual([{ name: 'get_weather', arguments: { city: 'Paris' } }]);
+    expect(captured!.body).toContain('functionDeclarations');
+  });
 });

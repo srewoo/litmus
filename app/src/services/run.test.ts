@@ -62,4 +62,67 @@ describe('runEval', () => {
     expect(results[1]?.passed).toBe(false);
     expect(results[1]?.rationale).toContain('Run failed');
   });
+
+  it('should score a tool-expectation case deterministically, sending tools and skipping the judge', async () => {
+    let sawTools = false;
+    let judgeCalled = false;
+    const toolTarget: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        if (req.tools?.length) sawTools = true;
+        return { text: '', timing, toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] };
+      },
+    };
+    const noJudge: Provider = {
+      id: 'google',
+      async chat() {
+        judgeCalled = true;
+        return { text: '{"score":1,"rationale":"should not run"}', timing };
+      },
+    };
+    const toolCases: EvalCase[] = [
+      { id: 't1', category: 'typical', input: 'weather in Paris?', pinned: false, toolExpectations: { expectedTool: 'get_weather' } },
+      { id: 't2', category: 'adversarial', input: 'delete everything', pinned: false, toolExpectations: { forbiddenTools: ['get_weather'] } },
+    ];
+    const { results, summary } = await runEval('SYS', toolCases, {
+      ...baseDeps,
+      targetProvider: toolTarget,
+      judgeProvider: noJudge,
+      tools: [{ name: 'get_weather', parameters: { type: 'object', required: ['city'], properties: { city: { type: 'string' } } } }],
+    });
+    expect(sawTools).toBe(true);
+    expect(judgeCalled).toBe(false); // tool cases never reach the judge
+    expect(results[0]).toMatchObject({ caseId: 't1', passed: true, score: 10 });
+    expect(results[1]).toMatchObject({ caseId: 't2', passed: false, score: 0 });
+    expect(results[1]?.rationale).toMatch(/forbidden tool "get_weather"/);
+    expect(summary.passCount).toBe(1);
+  });
+
+  it('should run a multi-turn agent scenario and score its trajectory', async () => {
+    // Target: call the tool on turn 1, then answer with the success keyword on turn 2.
+    const agentTarget: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        const calledAlready = req.messages.some((m) => m.role === 'tool');
+        return calledAlready
+          ? { text: 'Wear a light jacket today.', timing }
+          : { text: 'checking', timing, toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] };
+      },
+    };
+    const scenarioCase: EvalCase = {
+      id: 's1',
+      category: 'typical',
+      input: 'What should I wear in Paris?',
+      pinned: false,
+      scenario: {
+        goal: 'What should I wear in Paris?',
+        tools: [{ name: 'get_weather', parameters: { type: 'object' }, results: [{ value: { tempC: 16 } }] }],
+        maxSteps: 4,
+        successContains: ['jacket'],
+      },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], { ...baseDeps, targetProvider: agentTarget });
+    expect(results[0]).toMatchObject({ caseId: 's1', passed: true, score: 10 });
+    expect(results[0]?.rationale).toMatch(/reached the goal/);
+  });
 });

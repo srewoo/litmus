@@ -40,6 +40,9 @@
             <div><div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold" type="number" min="0" max="10" step="0.5" /></div>
             <div><div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0" step="0.05" /></div>
           </div>
+          <div class="label">Samples per case (variance)</div>
+          <input class="field numin" id="samples" type="number" min="1" max="5" step="1" />
+          <p class="hint2">Run each case N times to surface run-to-run variance. 1 is fastest; 3–5 reveals how noisy a score is (costs N× more).</p>
 
           <div class="msg hidden" id="settingsMsg"></div>
           <div class="btn-row">
@@ -71,6 +74,12 @@
 
       <div class="btn-row" style="margin:0 0 10px"><button class="btn ghost block" id="grabBtn">⤓ Grab from this tab</button></div>
       <textarea class="field" id="prompt" spellcheck="false">You are a support-triage assistant. Classify each ticket into Billing, Bug, How-to, or Account. Return JSON with category, urgency (1-5), and a short reason.</textarea>
+
+      <div class="label">What are you testing?</div>
+      <div class="modes" id="modes">
+        <button class="chip" id="modeQuality" aria-pressed="true"><span class="nm">Output quality</span><span class="modesub">analyze + rubric + judge</span></button>
+        <button class="chip" id="modeTools" aria-pressed="false"><span class="nm">Tool &amp; agent</span><span class="modesub">deterministic checks</span></button>
+      </div>
 
       <div class="label">Target model</div>
       <div class="select"><span class="sl"><span class="pv">AI</span>
@@ -138,6 +147,42 @@
       <p class="kicker">Eval cases · remove any you don't want</p>
       <h1 class="h-lead">What we'll test against</h1>
       <div id="casesHost"></div>
+
+      <details class="toolpanel" id="toolPanel">
+        <summary>🔧 Tool tests <span class="badge beta">Beta</span></summary>
+        <p class="toolhint">Test whether the model calls the right tool with valid arguments. Define the tools available to it, then add a case that asserts the expected call.</p>
+
+        <div class="label">Tool definitions · JSON array</div>
+        <textarea class="field mono toolarea" id="toolDefs" spellcheck="false" placeholder='[{"name":"get_weather","description":"Look up weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}}]'></textarea>
+        <div class="toolstatus" id="toolDefsStatus"></div>
+        <div class="btn-row" style="margin-top:10px"><button class="btn ghost block" id="genToolCasesBtn">✦ Generate tool tests</button></div>
+
+        <div class="label">Or add one manually</div>
+        <input class="field" id="toolCaseInput" placeholder="User message — e.g. What's the weather in Paris?" autocomplete="off" />
+        <div class="tworow">
+          <div>
+            <div class="label">Expected tool</div>
+            <div class="select"><span class="sl"><span class="pv">🔧</span><select id="toolExpected"></select></span></div>
+          </div>
+          <div>
+            <div class="label">Forbidden · comma-sep</div>
+            <input class="field" id="toolForbidden" placeholder="delete_account" autocomplete="off" />
+          </div>
+        </div>
+        <div class="label">Required args · JSON (optional)</div>
+        <input class="field mono" id="toolRequiredArgs" placeholder='{"city":"Paris"}' autocomplete="off" />
+        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addToolCaseBtn">+ Add tool test</button></div>
+      </details>
+
+      <details class="toolpanel" id="agentPanel">
+        <summary>🤖 Agent scenarios <span class="badge beta">Beta</span></summary>
+        <p class="toolhint">Test a multi-step agent: give it a goal and mock tools (with scripted results — you can inject a failure to test recovery). litmus runs the model in a loop, feeding tool results back, and scores whether it reaches the goal. Tools are mocked — nothing real is executed.</p>
+        <div class="label">Scenario · JSON</div>
+        <textarea class="field mono toolarea" id="scenarioJson" spellcheck="false" placeholder='{"goal":"What should I wear in Paris today?","maxSteps":4,"successContains":["jacket"],"tools":[{"name":"get_weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}},"results":[{"value":{"tempC":15,"rain":true}}]}]}'></textarea>
+        <div class="toolstatus" id="scenarioStatus"></div>
+        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addScenarioBtn">+ Add agent scenario</button></div>
+      </details>
+
       <div class="costbar"><span>Estimated cost</span><span class="costval" id="costLine"></span></div>
       <div class="btn-row">
         <button class="btn ghost" id="casesBackBtn">Back</button>

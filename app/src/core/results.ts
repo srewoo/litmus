@@ -1,5 +1,5 @@
 /** Pure result aggregation: turn per-case results into a run summary (quality + speed). */
-import type { CaseResult, RunSummary } from '../shared/types';
+import type { CaseResult, RunSummary, SampleStats } from '../shared/types';
 import { round1 } from '../shared/num';
 import { aggregateSpeed } from './timing';
 
@@ -8,6 +8,38 @@ export const DEFAULT_PASS_THRESHOLD = 6;
 
 export function scorePasses(score: number, threshold: number = DEFAULT_PASS_THRESHOLD): boolean {
   return score >= threshold;
+}
+
+/**
+ * Fold N repeated runs of the same case into one CaseResult, capturing run-to-run
+ * spread. Aggregated score is the mean; the case passes if the MAJORITY of samples
+ * passed. With a single run, returns it unchanged (no samples block).
+ */
+export function foldSamples(runs: readonly CaseResult[], threshold: number = DEFAULT_PASS_THRESHOLD): CaseResult {
+  const first = runs[0];
+  if (!first) throw new Error('foldSamples: no runs');
+  if (runs.length === 1) return first;
+  const scores = runs.map((r) => r.score);
+  const mean = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
+  const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
+  const passRate = runs.filter((r) => scorePasses(r.score, threshold)).length / runs.length;
+  const stats: SampleStats = {
+    count: runs.length,
+    scores,
+    mean,
+    min: Math.min(...scores),
+    max: Math.max(...scores),
+    stdev: round1(Math.sqrt(variance)),
+    passRate,
+  };
+  const spread = stats.min === stats.max ? `stable at ${mean}` : `${stats.min}–${stats.max}, σ${stats.stdev}`;
+  return {
+    ...first,
+    score: mean,
+    passed: passRate >= 0.5,
+    rationale: `${first.rationale} · ${runs.length} runs (${spread})`,
+    samples: stats,
+  };
 }
 
 /**

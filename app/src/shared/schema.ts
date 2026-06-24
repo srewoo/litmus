@@ -40,6 +40,8 @@ export const SettingsSchema = z.object({
   passThreshold: z.number().min(0).max(10).default(6),
   /** Hard per-run spend cap, USD. */
   spendCapUsd: z.number().min(0).default(0.5),
+  /** Run each case this many times to measure run-to-run variance. */
+  samples: z.number().int().min(1).max(5).default(1),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -136,4 +138,60 @@ export const FixSchema = z.object({
 
 export const FixesSchema = z.object({
   fixes: z.array(FixSchema),
+});
+
+/* ---- Tools (ADR 0001) ---- */
+
+export const ToolDefSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  /** JSON Schema object describing the tool's parameters. */
+  parameters: z.record(z.unknown()),
+});
+
+export const ToolCallSchema = z.object({
+  name: z.string().min(1),
+  arguments: z.unknown(),
+  rawArguments: z.string().optional(),
+});
+
+export const ToolExpectationSchema = z.object({
+  expectedTool: z.string().min(1).optional(),
+  forbiddenTools: z.array(z.string().min(1)).optional(),
+  requiredArgs: z.record(z.unknown()).optional(),
+});
+
+/** Model output when auto-generating tool-test cases from a catalog (ADR 0001). */
+export const GeneratedToolCaseSchema = z.object({
+  category: CaseCategorySchema,
+  input: z.string().min(1),
+  expectedTool: z.string().optional(),
+  forbiddenTools: z.array(z.string()).optional(),
+  requiredArgs: z.record(z.unknown()).optional(),
+  note: z.string().optional(),
+});
+
+export const GeneratedToolCasesSchema = z.object({
+  cases: z.array(GeneratedToolCaseSchema).min(1),
+});
+
+/* ---- Agent scenarios (ADR 0002) ---- */
+
+export const MockResultSchema = z.union([
+  z.object({ value: z.unknown() }),
+  z.object({ error: z.string() }),
+]);
+
+export const MockToolSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  parameters: z.record(z.unknown()),
+  results: z.array(MockResultSchema),
+});
+
+export const ScenarioSchema = z.object({
+  goal: z.string().min(1),
+  tools: z.array(MockToolSchema),
+  maxSteps: z.number().int().min(1).max(20),
+  successContains: z.array(z.string()).optional(),
 });

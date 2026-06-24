@@ -41,12 +41,18 @@ const CAT_CLASS: Record<EvalCase['category'], string> = { typical: 'typ', edge: 
 export function casesListHtml(cases: readonly EvalCase[]): string {
   if (cases.length === 0) return '<p class="sub">No cases yet.</p>';
   return cases
-    .map(
-      (c, i) =>
+    .map((c, i) => {
+      const tool = c.scenario
+        ? `<span class="ctag">🤖 agent · ${c.scenario.maxSteps} steps</span>`
+        : c.toolExpectations
+          ? `<span class="ctag">🔧 ${esc(c.toolExpectations.expectedTool ?? 'tool test')}</span>`
+          : '';
+      return (
         `<div class="case"><span class="cat ${CAT_CLASS[c.category]}"></span>` +
-        `<div class="cx"><div class="ct">${c.category}</div><div class="cb">${esc(c.input)}</div></div>` +
-        `<button class="rm" data-i="${i}" title="Remove">✕</button></div>`,
-    )
+        `<div class="cx"><div class="ct">${c.category}${tool}</div><div class="cb">${esc(c.input)}</div></div>` +
+        `<button class="rm" data-i="${i}" title="Remove">✕</button></div>`
+      );
+    })
     .join('');
 }
 
@@ -77,9 +83,15 @@ export function resultsTableHtml(
       const cat = c ? ` · ${c.category}` : '';
       const tip = `${r.caseId}${cat}\n\n${c?.input ?? ''}\n\n— ${r.rationale}`.trim();
       const idTag = `<span class="cid">${esc(r.caseId)}</span>`;
+      // Spread badge when the case was sampled more than once.
+      const spread = r.samples
+        ? r.samples.min === r.samples.max
+          ? `<span class="spread">×${r.samples.count}</span>`
+          : `<span class="spread">${r.samples.min}–${r.samples.max}</span>`
+        : '';
       return (
         `<div class="mrow"><div class="cse" title="${esc(tip)}">${idTag}${esc(detail)}</div>` +
-        `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}">${r.score.toFixed(1)}</div>` +
+        `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}">${r.score.toFixed(1)}${spread}</div>` +
         `<div class="cell">${mark}</div></div>`
       );
     })

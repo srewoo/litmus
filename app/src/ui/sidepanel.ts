@@ -15,6 +15,7 @@ import { parseTarget } from './target';
 import { buildWiring } from './providerDeps';
 import { analyzePrompt } from '../services/analysis';
 import { generateCases } from '../services/evalgen';
+import { generateToolCases } from '../services/toolGen';
 import { generateEvalPrompt } from '../services/evalPrompt';
 import { generateEvalSuite, combineRubrics } from '../services/evalSuite';
 import type { Dimension } from '../services/dimensionExtract';
@@ -50,7 +51,9 @@ import {
   band,
 } from './views';
 import type { VersionVM } from './views';
-import type { EvalCase, PromptAnalysis, PromptVersion, TargetModel } from '../shared/types';
+import type { EvalCase, PromptAnalysis, PromptVersion, TargetModel, ToolDef, ToolExpectation } from '../shared/types';
+import { ToolDefSchema, ScenarioSchema } from '../shared/schema';
+import { z } from 'zod';
 
 const STEPS = ['capture', 'analyze', 'evalprompt', 'cases', 'run', 'results', 'fixes', 'versions'] as const;
 type Step = (typeof STEPS)[number];
@@ -58,6 +61,7 @@ type Step = (typeof STEPS)[number];
 /** How many cases the first generation produces, and how many "+more" adds per click. */
 const DEFAULT_CASE_COUNT = 12;
 const MORE_CASE_COUNT = 10;
+const TOOL_CASE_COUNT = 6;
 
 const area = chromeLocal();
 const session = chromeSession();
@@ -70,7 +74,11 @@ interface AppState {
   dimensions: Dimension[];
   rubrics: Record<string, string>;
   activeDimension: string;
+  /** What the user is testing: prompt output quality, or tool/agent behavior. */
+  mode: 'quality' | 'tools';
   cases: EvalCase[];
+  /** Tool catalog (ADR 0001) sent to the target for tool-test cases. */
+  tools: ToolDef[];
   outcome: RunOutcome | null;
   rubricHealth: RubricHealth | null;
   fixes: Fix[];
@@ -84,7 +92,9 @@ const state: AppState = {
   dimensions: [],
   rubrics: {},
   activeDimension: '',
+  mode: 'quality',
   cases: [],
+  tools: [],
   outcome: null,
   rubricHealth: null,
   fixes: [],
@@ -116,7 +126,9 @@ function persistSession(): void {
     dimensions: state.dimensions,
     rubrics: state.rubrics,
     activeDimension: state.activeDimension,
+    mode: state.mode,
     cases: state.cases,
+    tools: state.tools,
     suiteKey,
     casesKey,
   });
@@ -132,6 +144,8 @@ async function restoreSession(): Promise<void> {
   state.rubrics = snap.rubrics;
   state.activeDimension = snap.activeDimension;
   state.cases = snap.cases;
+  state.tools = snap.tools ?? [];
+  if (snap.mode) setMode(snap.mode);
   suiteKey = snap.suiteKey;
   casesKey = snap.casesKey;
   (el('prompt') as HTMLTextAreaElement).value = snap.prompt;
@@ -140,6 +154,14 @@ async function restoreSession(): Promise<void> {
     targetSel.value = snap.targetValue;
     if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
   }
+  // Restore the tool-defs editor + dropdown so tool tests survive a reopen.
+  if (state.tools.length) {
+    (el('toolDefs') as HTMLTextAreaElement).value = JSON.stringify(state.tools, null, 2);
+    const status = el('toolDefsStatus');
+    status.textContent = `✓ ${state.tools.length} tool${state.tools.length === 1 ? '' : 's'} defined`;
+    status.className = 'toolstatus ok';
+  }
+  populateExpectedToolSelect();
 }
 
 // `bare` controls the option value: the target select needs "provider/model"; the
@@ -331,6 +353,38 @@ function busy(id: string, label: string): () => void {
     btn.disabled = false;
     btn.textContent = prev;
   };
+}
+
+/** Switch the Capture-step testing mode and relabel the primary button. */
+function setMode(mode: 'quality' | 'tools'): void {
+  state.mode = mode;
+  el('modeQuality').setAttribute('aria-pressed', String(mode === 'quality'));
+  el('modeTools').setAttribute('aria-pressed', String(mode === 'tools'));
+  el('analyzeBtn').textContent = mode === 'tools' ? 'Set up tool & agent tests →' : 'Analyze prompt →';
+  persistSession();
+}
+
+/** The Capture primary button — routes by mode (rubric flow vs. straight to tests). */
+function onCapturePrimary(): void {
+  if (state.mode === 'tools') void onToToolTests();
+  else void onAnalyze();
+}
+
+/** Tool/agent mode: capture prompt + target, then go straight to Cases (no rubric steps). */
+async function onToToolTests(): Promise<void> {
+  setMessage('');
+  state.prompt = (el('prompt') as HTMLTextAreaElement).value;
+  let ctx;
+  try {
+    ctx = await wiring();
+  } catch (e) {
+    el('keybox').classList.remove('hidden');
+    return setMessage(e instanceof Error ? e.message : 'Setup needed.', 'info');
+  }
+  state.target = ctx.target;
+  persistSession();
+  await renderCasesView();
+  (el('toolPanel') as HTMLDetailsElement).open = true;
 }
 
 async function onAnalyze(): Promise<void> {
@@ -532,7 +586,7 @@ async function renderCasesView(): Promise<boolean> {
   html('casesHost', casesListHtml(state.cases));
   const { settings, target, w } = await wiring();
   const est = estimateRun({
-    caseCount: state.cases.length,
+    caseCount: state.cases.length * Math.max(1, settings.samples),
     targetModel: target.model,
     judgeModel: w.auxModel,
     analyzerModel: w.auxModel,
@@ -545,6 +599,11 @@ async function renderCasesView(): Promise<boolean> {
   const over = exceedsCap(est, settings.spendCapUsd);
   el('costLine').textContent = `${formatUsd(est.estUsd)} · ${est.totalCalls} calls · cap ${formatUsd(settings.spendCapUsd)}`;
   (el('runBtn') as HTMLButtonElement).disabled = over;
+  // Tool/agent mode tests tools, not text outputs — hide the text-case generators.
+  const toolsMode = state.mode === 'tools';
+  el('regenBtn').classList.toggle('hidden', toolsMode);
+  el('moreCasesBtn').classList.toggle('hidden', toolsMode);
+  el('agentPanel').classList.toggle('hidden', false);
   setMessage(over ? 'Estimated cost exceeds your cap. Raise the cap or trim cases.' : '', over ? 'error' : 'info');
   show('cases');
   return over;
@@ -604,8 +663,160 @@ async function onMoreCases(): Promise<void> {
   }
 }
 
+/* ---- Tool tests (ADR 0001) ---- */
+
+const ToolDefsSchema = z.array(ToolDefSchema);
+
+/** Highest numeric suffix among existing case ids (0 if none). */
+function maxCaseSuffix(): number {
+  return state.cases.reduce((m, c) => {
+    const n = Number(/(\d+)$/.exec(c.id)?.[1] ?? NaN);
+    return Number.isFinite(n) && n > m ? n : m;
+  }, 0);
+}
+
+/** Next free case id past the highest numeric suffix in use. */
+function nextCaseId(): string {
+  return `case-${maxCaseSuffix() + 1}`;
+}
+
+/** Auto-generate tool-test cases from the defined catalog and append them. */
+async function onGenerateToolCases(): Promise<void> {
+  if (state.tools.length === 0) return setMessage('Define at least one tool first.', 'error');
+  const done = busy('genToolCasesBtn', 'Generating…');
+  try {
+    const ctx = await wiring();
+    const start = maxCaseSuffix();
+    const more = await generateToolCases(
+      state.prompt,
+      state.tools,
+      TOOL_CASE_COUNT,
+      {
+        provider: ctx.w.judgeProvider,
+        apiKey: ctx.w.judgeKey,
+        model: ctx.w.auxModel,
+        makeId: (i) => `case-${start + i + 1}`,
+      },
+      analysisHint(),
+    );
+    state.cases = [...state.cases, ...more];
+    persistSession();
+    const over = await renderCasesView();
+    if (!over) setMessage(`Added ${more.length} tool tests — ${state.cases.length} cases total.`);
+  } catch (err) {
+    setMessage(describeError(err), 'error');
+  } finally {
+    done();
+  }
+}
+
+/** Fill the expected-tool dropdown from the parsed tool catalog. */
+function populateExpectedToolSelect(): void {
+  const sel = el('toolExpected') as HTMLSelectElement;
+  sel.replaceChildren();
+  const any = document.createElement('option');
+  any.value = '';
+  any.textContent = state.tools.length ? '(any / none)' : 'define tools first';
+  sel.appendChild(any);
+  for (const t of state.tools) {
+    const o = document.createElement('option');
+    o.value = t.name;
+    o.textContent = t.name;
+    sel.appendChild(o);
+  }
+}
+
+/** Parse + validate the tool-definitions textarea, updating state and status. */
+function onToolDefsChanged(): void {
+  const raw = (el('toolDefs') as HTMLTextAreaElement).value.trim();
+  const status = el('toolDefsStatus');
+  if (!raw) {
+    state.tools = [];
+    status.textContent = '';
+    status.className = 'toolstatus';
+    populateExpectedToolSelect();
+    persistSession();
+    return;
+  }
+  try {
+    state.tools = ToolDefsSchema.parse(JSON.parse(raw));
+    status.textContent = `✓ ${state.tools.length} tool${state.tools.length === 1 ? '' : 's'} defined`;
+    status.className = 'toolstatus ok';
+  } catch (err) {
+    state.tools = [];
+    status.textContent = err instanceof SyntaxError ? 'Invalid JSON' : 'Tool defs must be [{name, parameters}]';
+    status.className = 'toolstatus err';
+  }
+  populateExpectedToolSelect();
+  persistSession();
+}
+
+/** Build a tool-test case from the mini-form and append it to the case list. */
+async function onAddToolCase(): Promise<void> {
+  const input = (el('toolCaseInput') as HTMLInputElement).value.trim();
+  if (!input) return setMessage('Add a user message for the tool test.', 'error');
+  const expectedTool = (el('toolExpected') as HTMLSelectElement).value;
+  const forbidden = (el('toolForbidden') as HTMLInputElement).value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const argsRaw = (el('toolRequiredArgs') as HTMLInputElement).value.trim();
+  let requiredArgs: Record<string, unknown> | undefined;
+  if (argsRaw) {
+    try {
+      requiredArgs = JSON.parse(argsRaw) as Record<string, unknown>;
+    } catch {
+      return setMessage('Required args must be valid JSON.', 'error');
+    }
+  }
+  const toolExpectations: ToolExpectation = {
+    ...(expectedTool ? { expectedTool } : {}),
+    ...(forbidden.length ? { forbiddenTools: forbidden } : {}),
+    ...(requiredArgs ? { requiredArgs } : {}),
+  };
+  state.cases = [...state.cases, { id: nextCaseId(), category: 'typical', input, pinned: false, toolExpectations }];
+  (el('toolCaseInput') as HTMLInputElement).value = '';
+  (el('toolForbidden') as HTMLInputElement).value = '';
+  (el('toolRequiredArgs') as HTMLInputElement).value = '';
+  persistSession();
+  await renderCasesView();
+  setMessage(`Added tool test — ${state.cases.length} cases total.`);
+}
+
+/** Parse the scenario JSON and append it as a multi-turn agent case (ADR 0002). */
+async function onAddScenario(): Promise<void> {
+  const raw = (el('scenarioJson') as HTMLTextAreaElement).value.trim();
+  const status = el('scenarioStatus');
+  if (!raw) {
+    status.textContent = 'Paste a scenario JSON first.';
+    status.className = 'toolstatus err';
+    return;
+  }
+  let scenario;
+  try {
+    scenario = ScenarioSchema.parse(JSON.parse(raw));
+  } catch (err) {
+    status.textContent = err instanceof SyntaxError ? 'Invalid JSON' : 'Scenario needs goal, tools[], and maxSteps (1–20).';
+    status.className = 'toolstatus err';
+    return;
+  }
+  status.textContent = `✓ scenario "${scenario.goal.slice(0, 40)}${scenario.goal.length > 40 ? '…' : ''}" added`;
+  status.className = 'toolstatus ok';
+  state.cases = [...state.cases, { id: nextCaseId(), category: 'typical', input: scenario.goal, pinned: false, scenario }];
+  (el('scenarioJson') as HTMLTextAreaElement).value = '';
+  persistSession();
+  await renderCasesView();
+  setMessage(`Added agent scenario — ${state.cases.length} cases total.`);
+}
+
 async function onRun(): Promise<void> {
   setMessage('');
+  if (state.cases.length === 0) {
+    return setMessage(
+      state.mode === 'tools' ? 'Add a tool test or agent scenario first.' : 'No cases to run — generate some first.',
+      'error',
+    );
+  }
   show('run');
   try {
     const { settings, target, w } = await wiring();
@@ -619,6 +830,8 @@ async function onRun(): Promise<void> {
       judgeModel: w.auxModel,
       rubric: combineRubrics(state.rubrics) || undefined,
       passThreshold: settings.passThreshold,
+      samples: settings.samples,
+      ...(state.tools.length ? { tools: state.tools } : {}),
     });
     state.outcome = outcome;
 
@@ -819,21 +1032,24 @@ function goCapture(): void {
 let sessionVersions: PromptVersion[] = [];
 
 /**
- * Populate the capture-screen version dropdown. Shown only when 2+ versions exist
- * this session, so you can reload an earlier prompt without leaving Capture.
+ * Populate the capture-screen version dropdown. The picker is for switching to a
+ * DIFFERENT version, so the prompt currently under test is excluded — you only
+ * see the other versions you could load. Hidden when there's nothing else to load.
  */
 async function refreshVersionPicker(): Promise<void> {
   sessionVersions = [...(await store.getVersions())];
   const wrap = el('versionPickerWrap');
   const sel = el('versionPicker') as HTMLSelectElement;
-  if (sessionVersions.length < 2) {
+  // Exclude the version that is the current prompt under test.
+  const loadable = sessionVersions.filter((v) => v.text !== state.prompt);
+  if (loadable.length === 0) {
     wrap.classList.add('hidden');
     return;
   }
-  // Pull each version's run so the label can show its overall score.
+  // Pull each loadable version's run so the label can show its overall score.
   const scores = new Map<string, number>();
   await Promise.all(
-    sessionVersions.map(async (v) => {
+    loadable.map(async (v) => {
       const run = await store.getRun(v.id);
       if (run) scores.set(v.id, run.summary.overall);
     }),
@@ -841,16 +1057,15 @@ async function refreshVersionPicker(): Promise<void> {
   sel.replaceChildren();
   const placeholder = document.createElement('option');
   placeholder.value = '';
-  placeholder.textContent = 'Load a previous version…';
+  placeholder.textContent = 'Load a different version…';
   sel.appendChild(placeholder);
-  for (let i = sessionVersions.length - 1; i >= 0; i--) {
-    const v = sessionVersions[i];
+  for (let i = loadable.length - 1; i >= 0; i--) {
+    const v = loadable[i];
     if (!v) continue;
     const score = scores.has(v.id) ? ` · ${round1(scores.get(v.id)!)}/10` : '';
-    const current = v.id === state.lastVersionId ? ' (current)' : '';
     const opt = document.createElement('option');
     opt.value = v.id;
-    opt.textContent = `v${v.index} · ${v.note}${score}${current}`;
+    opt.textContent = `v${v.index} · ${v.note}${score}`;
     sel.appendChild(opt);
   }
   sel.value = '';
@@ -867,6 +1082,8 @@ function onPickVersion(): void {
   state.prompt = v.text;
   promptEl.value = v.text;
   persistSession();
+  // The loaded version is now the current prompt under test → drop it from the list.
+  void refreshVersionPicker();
   setMessage(
     identical
       ? `v${v.index}'s prompt is identical to the one already shown — nothing changed.`
@@ -909,6 +1126,7 @@ async function openSettings(): Promise<void> {
   (el('customModel') as HTMLInputElement).value = s.customModel ?? '';
   (el('passThreshold') as HTMLInputElement).value = String(s.passThreshold);
   (el('spendCap') as HTMLInputElement).value = String(s.spendCapUsd);
+  (el('samples') as HTMLInputElement).value = String(s.samples);
   setSettingsMsg('');
   el('settingsModal').classList.remove('hidden');
 }
@@ -935,6 +1153,7 @@ async function onSaveSettings(): Promise<void> {
       customModel: customRaw,
       passThreshold: Number((el('passThreshold') as HTMLInputElement).value),
       spendCapUsd: Number((el('spendCap') as HTMLInputElement).value),
+      samples: Number((el('samples') as HTMLInputElement).value),
     });
     await saveSettings(area, next);
     // Rebuild the capture dropdown (it may now include a custom model) and apply the default.
@@ -1000,7 +1219,9 @@ function wirePacks(): void {
 
 function init(): void {
   wirePacks();
-  el('analyzeBtn').addEventListener('click', () => void onAnalyze());
+  el('analyzeBtn').addEventListener('click', () => onCapturePrimary());
+  el('modeQuality').addEventListener('click', () => setMode('quality'));
+  el('modeTools').addEventListener('click', () => setMode('tools'));
   el('grabBtn').addEventListener('click', () => void onGrab());
   el('versionPicker').addEventListener('change', () => onPickVersion());
   el('saveKey').addEventListener('click', () => void onSaveKey());
@@ -1026,7 +1247,11 @@ function init(): void {
   el('analyzeBackBtn').addEventListener('click', () => goCapture());
   el('regenBtn').addEventListener('click', () => void showCases(true));
   el('moreCasesBtn').addEventListener('click', () => void onMoreCases());
-  el('casesBackBtn').addEventListener('click', () => show('evalprompt'));
+  el('toolDefs').addEventListener('input', () => onToolDefsChanged());
+  el('genToolCasesBtn').addEventListener('click', () => void onGenerateToolCases());
+  el('addToolCaseBtn').addEventListener('click', () => void onAddToolCase());
+  el('addScenarioBtn').addEventListener('click', () => void onAddScenario());
+  el('casesBackBtn').addEventListener('click', () => show(state.mode === 'tools' ? 'capture' : 'evalprompt'));
   el('runBtn').addEventListener('click', () => void onRun());
   el('resultsBackBtn').addEventListener('click', () => show('cases'));
   el('fixBtn').addEventListener('click', () => void onFixes());

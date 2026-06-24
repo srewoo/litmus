@@ -10,7 +10,8 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "build": "esbuild src/ui/sidepanel.ts --bundle --format=iife --outfile=public/sidepanel.js --target=chrome116 --log-level=warning",
-    "build:watch": "npm run build -- --watch"
+    "build:watch": "npm run build -- --watch",
+    "package": "npm run build && rm -f litmus-extension-$npm_package_version.zip && cd public && zip -r -X ../litmus-extension-$npm_package_version.zip . -x '.*' '*/.*' && cd .. && echo \"Packaged litmus-extension-$npm_package_version.zip\""
   },
   "dependencies": {
     "zod": "^3.23.8"

@@ -154,6 +154,21 @@
         <p>Every run is saved as a version. Compare the baseline against the latest by dimension, and export the whole history as Markdown or JSON.</p>
       </div></div>
 
+      <h2>Testing tool &amp; agent behavior <span style="font-size:11px;color:var(--teal);background:var(--teal-dim);border:1px solid var(--teal-line);border-radius:5px;padding:1px 6px;vertical-align:middle">Beta</span></h2>
+      <p>If your model calls tools/functions, you don't need the rubric flow. On the <b>Capture</b> step, under <b>"What are you testing?"</b>, choose <b>Tool &amp; agent</b> instead of Output quality. The button changes to <code>Set up tool &amp; agent tests →</code> and takes you straight to the Cases step — skipping Analyze and Build eval prompt, since tool and agent tests are scored <i>deterministically</i>, with no LLM judge.</p>
+
+      <h3>🔧 Tool tests — single-step tool calls</h3>
+      <p>Checks that, for a given message, the model calls the <i>right</i> tool with <i>valid</i> arguments and avoids the ones it shouldn't.</p>
+      <ol>
+        <li><b>Define your tools.</b> In the 🔧 Tool tests panel, paste a JSON array of tool definitions — each with a <code>name</code>, optional <code>description</code>, and a JSON-Schema <code>parameters</code> object. litmus validates it live.</li>
+        <li><b>Generate tests, or add your own.</b> Click <code>✦ Generate tool tests</code> to have litmus propose cases from your catalog, or add one manually: a user message, the expected tool, any forbidden tools, and optional required argument values.</li>
+        <li><b>Run.</b> Each test is scored pass/fail by a deterministic checker — right tool called, arguments parsed and matched the schema, no forbidden tool used — with the reason shown in the results.</li>
+      </ol>
+
+      <h3>🤖 Agent scenarios — multi-step tasks</h3>
+      <p>Tests a model that uses tools across several turns to finish a task. In the 🤖 Agent scenarios panel, paste a scenario as JSON: a <code>goal</code>, the <code>tools</code> it may call (each with <i>scripted</i> <code>results</code> — you can inject a failure to test recovery), a <code>maxSteps</code> cap, and optional <code>successContains</code> keywords the final answer must include. litmus runs the model in a loop — tool call → mocked result → continue — and scores whether it reached the goal using only the tools you defined.</p>
+      <p><b>Tools are mocked.</b> litmus never executes a real tool; it returns the responses you scripted, so runs are deterministic and side-effect-free. Both tool tests and agent scenarios work with OpenAI, Anthropic, and Google targets (litmus normalizes each provider's tool-call format). Richer per-dimension trajectory scoring (efficiency, recovery) is planned; today's agent verdict is goal-reached plus correct tool selection.</p>
+
       <h2>Tips &amp; shortcuts</h2>
       <div class="tip"><span>＋</span><div><b>Need more coverage?</b> On the Cases step, click <code>+10 cases</code> to append ten fresh cases without losing the ones you have. litmus is told to avoid duplicating existing cases.</div></div>
       <div class="tip"><span>⚡</span><div><b>No wasted calls.</b> The eval prompt and generated cases are cached for your session, so stepping back and forth never re-runs the model. Editing your prompt (including applying fixes) automatically refreshes them.</div></div>
@@ -171,6 +186,9 @@
       </details>
       <details><summary>What does the estimated cost mean?</summary>
         <p>It's an estimate of the total API spend for a run, based on case count and average token sizes. If it exceeds your spend cap (set in Settings), the Run button is disabled until you raise the cap or trim cases.</p>
+      </details>
+      <details><summary>How are tool tests scored?</summary>
+        <p>Deterministically, not by the LLM judge. A tool test passes only if the model called the expected tool, the arguments parsed as JSON and matched the tool's schema (required fields, types), any required values matched, and no forbidden tool was called. Because it's deterministic, a tool test's pass/fail doesn't drift run-to-run the way judged scores can.</p>
       </details>
     </div>
   </div>

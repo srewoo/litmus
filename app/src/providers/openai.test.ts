@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { OpenAIProvider, parseOpenAIChunk } from './openai';
+import { OpenAIProvider, parseOpenAIChunk, assembleToolCalls, toOpenAIMessages } from './openai';
 import type { FetchInit, FetchResponse } from './types';
 import { ProviderError } from './types';
 
@@ -27,6 +27,41 @@ describe('parseOpenAIChunk', () => {
   });
   it('should return empty parts for a malformed frame', () => {
     expect(parseOpenAIChunk('not json')).toEqual({});
+  });
+  it('should extract tool-call fragments', () => {
+    const parts = parseOpenAIChunk('{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{\\"ci"}}]}}]}');
+    expect(parts.toolCalls).toEqual([{ index: 0, name: 'get_weather', argsFragment: '{"ci' }]);
+  });
+});
+
+describe('toOpenAIMessages', () => {
+  it('passes plain messages through unchanged', () => {
+    expect(toOpenAIMessages([{ role: 'user', content: 'hi' }])).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+  it('serializes a tool conversation with matching tool_call_id', () => {
+    const out = toOpenAIMessages([
+      { role: 'user', content: 'weather?' },
+      { role: 'assistant', content: 'checking', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] },
+      { role: 'tool', toolName: 'get_weather', content: '{"tempC":18}' },
+    ]) as Array<Record<string, unknown>>;
+    const asst = out[1] as { tool_calls: Array<{ id: string; function: { arguments: string } }> };
+    const tool = out[2] as { tool_call_id: string };
+    expect(asst.tool_calls[0]?.function.arguments).toBe('{"city":"Paris"}');
+    expect(tool.tool_call_id).toBe(asst.tool_calls[0]?.id); // ids match
+  });
+});
+
+describe('assembleToolCalls', () => {
+  it('joins argument fragments and parses JSON', () => {
+    const acc = new Map([[0, { name: 'get_weather', args: '{"city":"Paris"}' }]]);
+    expect(assembleToolCalls(acc)).toEqual([{ name: 'get_weather', arguments: { city: 'Paris' } }]);
+  });
+  it('keeps the raw string when arguments are not valid JSON', () => {
+    const acc = new Map([[0, { name: 'f', args: '{bad' }]]);
+    expect(assembleToolCalls(acc)).toEqual([{ name: 'f', arguments: undefined, rawArguments: '{bad' }]);
+  });
+  it('drops fragments that never received a name', () => {
+    expect(assembleToolCalls(new Map([[0, { name: '', args: '{}' }]]))).toEqual([]);
   });
 });
 
@@ -103,5 +138,34 @@ describe('OpenAIProvider.chat', () => {
         { apiKey: 'bad', fetchImpl },
       ),
     ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('should send tools and assemble streamed tool calls across chunks', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return {
+        ok: true,
+        status: 200,
+        body: streamFrom([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{\\"city\\":"}}]}}]}\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"Paris\\"}"}}]}}]}\n',
+          'data: [DONE]\n',
+        ]),
+        text: async () => '',
+      };
+    };
+    const provider = new OpenAIProvider();
+    const res = await provider.chat(
+      {
+        model: 'gpt-5.1',
+        messages: [{ role: 'user', content: 'weather in Paris?' }],
+        tools: [{ name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
+      },
+      { apiKey: 'sk', fetchImpl, clock: fakeClock([0, 10, 20]) },
+    );
+    expect(res.toolCalls).toEqual([{ name: 'get_weather', arguments: { city: 'Paris' } }]);
+    expect(captured!.body).toContain('"tools"');
+    expect(captured!.body).toContain('"type":"function"');
   });
 });

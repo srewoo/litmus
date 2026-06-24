@@ -1,9 +1,12 @@
 /** Anthropic Messages adapter (streaming). Needs the browser-access opt-in header for BYOK. */
 import type { ChatCallOptions, ChatMessage, ChatRequest, ChatResponse, Provider } from './types';
 import { ProviderError, defaultFetch } from './types';
+import type { ToolDef } from '../shared/types';
 import { iterateSSE } from './sse';
 import { timeChunkStream } from '../core/stream';
 import { finalizeTiming } from '../core/timing';
+import type { ToolAcc, ToolCallDelta } from './toolStream';
+import { accumulateToolDeltas, assembleToolCalls } from './toolStream';
 
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
@@ -11,18 +14,32 @@ interface ChunkParts {
   delta?: string;
   inputTokens?: number;
   outputTokens?: number;
+  toolCalls?: ToolCallDelta[];
 }
 
 export function parseAnthropicChunk(payload: string): ChunkParts {
   try {
     const json = JSON.parse(payload) as {
       type?: string;
-      delta?: { text?: string };
+      index?: number;
+      content_block?: { type?: string; name?: string };
+      delta?: { text?: string; type?: string; partial_json?: string };
       message?: { usage?: { input_tokens?: number } };
       usage?: { output_tokens?: number };
     };
     const out: ChunkParts = {};
-    if (json.type === 'content_block_delta' && typeof json.delta?.text === 'string') out.delta = json.delta.text;
+    const idx = json.index ?? 0;
+    // A tool_use block opens → record its name at this index.
+    if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+      out.toolCalls = [{ index: idx, ...(json.content_block.name ? { name: json.content_block.name } : {}) }];
+    }
+    if (json.type === 'content_block_delta') {
+      if (typeof json.delta?.text === 'string') out.delta = json.delta.text;
+      // Tool arguments stream as input_json_delta fragments.
+      if (json.delta?.type === 'input_json_delta' && typeof json.delta.partial_json === 'string') {
+        out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
+      }
+    }
     if (typeof json.message?.usage?.input_tokens === 'number') out.inputTokens = json.message.usage.input_tokens;
     if (typeof json.usage?.output_tokens === 'number') out.outputTokens = json.usage.output_tokens;
     return out;
@@ -31,13 +48,55 @@ export function parseAnthropicChunk(payload: string): ChunkParts {
   }
 }
 
-/** Split litmus messages into Anthropic's top-level `system` plus user/assistant turns. */
-function splitSystem(messages: readonly ChatMessage[]): { system: string; rest: ChatMessage[] } {
+/** Translate litmus tool defs into Anthropic's tool shape (uses `input_schema`). */
+function toAnthropicTools(tools: readonly ToolDef[]): unknown[] {
+  return tools.map((t) => ({
+    name: t.name,
+    ...(t.description ? { description: t.description } : {}),
+    input_schema: t.parameters,
+  }));
+}
+
+/**
+ * Serialize to Anthropic's top-level `system` + messages, handling multi-turn
+ * tool conversations: assistant tool calls become `tool_use` blocks; tool results
+ * become `tool_result` blocks grouped into the following user message. tool_use
+ * ids are synthesized and matched to results in order (the agent loop guarantees
+ * results immediately follow their call, same order).
+ */
+export function toAnthropicMessages(messages: readonly ChatMessage[]): { system: string; msgs: unknown[] } {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
-  const rest = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const), content: m.content }));
-  return { system, rest };
+  const msgs: unknown[] = [];
+  const idQueue: string[] = [];
+  let pending: unknown[] = [];
+  let counter = 0;
+  const flush = (): void => {
+    if (pending.length) {
+      msgs.push({ role: 'user', content: pending });
+      pending = [];
+    }
+  };
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+    if (m.role === 'tool') {
+      pending.push({ type: 'tool_result', tool_use_id: idQueue.shift() ?? `toolu_${counter++}`, content: m.content });
+      continue;
+    }
+    flush();
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const blocks: unknown[] = m.content ? [{ type: 'text', text: m.content }] : [];
+      for (const c of m.toolCalls) {
+        const id = `toolu_${counter++}`;
+        idQueue.push(id);
+        blocks.push({ type: 'tool_use', id, name: c.name, input: c.arguments ?? {} });
+      }
+      msgs.push({ role: 'assistant', content: blocks });
+    } else {
+      msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
+    }
+  }
+  flush();
+  return { system, msgs };
 }
 
 export class AnthropicProvider implements Provider {
@@ -47,7 +106,7 @@ export class AnthropicProvider implements Provider {
     const fetchImpl = options.fetchImpl ?? defaultFetch();
     const clock = options.clock ?? (() => performance.now());
     const startMs = clock();
-    const { system, rest } = splitSystem(request.messages);
+    const { system, msgs } = toAnthropicMessages(request.messages);
 
     const init: Parameters<typeof fetchImpl>[1] = {
       method: 'POST',
@@ -63,7 +122,8 @@ export class AnthropicProvider implements Provider {
         temperature: request.temperature ?? 0,
         stream: true,
         ...(system ? { system } : {}),
-        messages: rest,
+        ...(request.tools?.length ? { tools: toAnthropicTools(request.tools) } : {}),
+        messages: msgs,
       }),
     };
     if (options.signal) Object.assign(init, { signal: options.signal });
@@ -76,19 +136,26 @@ export class AnthropicProvider implements Provider {
 
     let inTok: number | undefined;
     let outTok: number | undefined;
+    const toolAcc: ToolAcc = new Map();
     const body = res.body;
     async function* deltas(): AsyncIterable<string> {
       for await (const payload of iterateSSE(body)) {
         const p = parseAnthropicChunk(payload);
         if (p.inputTokens !== undefined) inTok = p.inputTokens;
         if (p.outputTokens !== undefined) outTok = p.outputTokens;
+        if (p.toolCalls) accumulateToolDeltas(toolAcc, p.toolCalls);
         if (p.delta !== undefined) yield p.delta;
       }
     }
 
     const measurement = await timeChunkStream(deltas(), startMs, clock);
     const tokens = inTok !== undefined || outTok !== undefined ? (inTok ?? 0) + (outTok ?? 0) : undefined;
-    const response: ChatResponse = { text: measurement.text, timing: finalizeTiming(measurement, tokens) };
+    const toolCalls = assembleToolCalls(toolAcc);
+    const response: ChatResponse = {
+      text: measurement.text,
+      timing: finalizeTiming(measurement, tokens),
+      ...(toolCalls.length ? { toolCalls } : {}),
+    };
     return tokens === undefined ? response : { ...response, tokens };
   }
 }

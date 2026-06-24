@@ -30,6 +30,61 @@ export interface PromptAnalysis {
   readonly suggestions: readonly string[];
 }
 
+/* ---- Tools (Tier 1: single-turn tool-call assertions; see ADR 0001) ---- */
+
+/** A tool the target model may call. `parameters` is a JSON Schema object. */
+export interface ToolDef {
+  readonly name: string;
+  readonly description?: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+/** A tool invocation parsed from a model response. `arguments` is the parsed JSON. */
+export interface ToolCall {
+  readonly name: string;
+  readonly arguments: unknown;
+  /** Raw argument string as returned — kept for diagnostics when parsing fails. */
+  readonly rawArguments?: string;
+}
+
+/**
+ * What a case asserts about the model's tool use, checked deterministically.
+ * All fields optional so a case can assert just one aspect.
+ */
+export interface ToolExpectation {
+  /** The tool that should be called (must appear among the calls). */
+  readonly expectedTool?: string;
+  /** Tools that must NOT be called. */
+  readonly forbiddenTools?: readonly string[];
+  /** Arguments the expected tool's call must contain (exact value match, subset). */
+  readonly requiredArgs?: Readonly<Record<string, unknown>>;
+}
+
+/* ---- Agent scenarios (Tier 2: multi-turn runs with mock tools; see ADR 0002) ---- */
+
+/** A mock tool's response for one call: a value, or an injected failure. */
+export type MockResult = { readonly value?: unknown } | { readonly error: string };
+
+/** A tool the agent may call during a scenario, with scripted (deterministic) responses. */
+export interface MockTool {
+  readonly name: string;
+  readonly description?: string;
+  readonly parameters: Record<string, unknown>;
+  /** Response per call index; the last entry repeats for further calls. Empty → empty object. */
+  readonly results: readonly MockResult[];
+}
+
+/** A multi-turn task: a goal, the mock tools available, and termination bounds. */
+export interface Scenario {
+  /** The user's task — becomes the first user message. */
+  readonly goal: string;
+  readonly tools: readonly MockTool[];
+  /** Hard cap on agent loop iterations (model turns). */
+  readonly maxSteps: number;
+  /** Optional substrings the final answer must contain (case-insensitive) to pass. */
+  readonly successContains?: readonly string[];
+}
+
 /* ---- Eval cases ---- */
 
 export type CaseCategory = 'typical' | 'edge' | 'adversarial';
@@ -40,6 +95,10 @@ export interface EvalCase {
   readonly input: string;
   readonly note?: string;
   readonly pinned: boolean;
+  /** When set, the case is scored on tool use (ADR 0001) instead of text. */
+  readonly toolExpectations?: ToolExpectation;
+  /** When set, the case is a multi-turn agent run (ADR 0002). */
+  readonly scenario?: Scenario;
 }
 
 /* ---- Run results (quality + speed) ---- */
@@ -53,16 +112,30 @@ export interface Timing {
   readonly tokensPerSec: number;
 }
 
+/** Spread across repeated samples of one case (variance), when samples > 1. */
+export interface SampleStats {
+  readonly count: number;
+  readonly scores: readonly number[];
+  readonly mean: number;
+  readonly min: number;
+  readonly max: number;
+  readonly stdev: number;
+  /** Fraction of samples that passed the threshold (0–1). */
+  readonly passRate: number;
+}
+
 export interface CaseResult {
   readonly caseId: string;
   readonly output: string;
-  /** 0–10 judge score. */
+  /** 0–10 score (the mean across samples when sampled more than once). */
   readonly score: number;
   readonly passed: boolean;
   readonly rationale: string;
   readonly timing: Timing;
-  /** Optional per-dimension judge scores, used to build the version litmus axis. */
+  /** Optional per-dimension scores, used to build the version litmus axis. */
   readonly dimensions?: readonly DimensionScore[];
+  /** Present when the case was run more than once — its run-to-run spread. */
+  readonly samples?: SampleStats;
 }
 
 export interface SpeedAggregate {

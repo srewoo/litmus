@@ -1,10 +1,14 @@
 /** Provider abstraction. Adapters call a real LLM; the core depends only on this interface. */
-import type { ProviderId, Timing } from '../shared/types';
+import type { ProviderId, Timing, ToolCall, ToolDef } from '../shared/types';
 import type { Clock } from '../core/stream';
 
 export interface ChatMessage {
-  readonly role: 'system' | 'user' | 'assistant';
+  readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string;
+  /** On an assistant turn: the tool calls it made (ADR 0002 multi-turn). */
+  readonly toolCalls?: readonly ToolCall[];
+  /** On a tool turn: which tool this result is for. */
+  readonly toolName?: string;
 }
 
 export interface ChatRequest {
@@ -12,6 +16,8 @@ export interface ChatRequest {
   readonly messages: readonly ChatMessage[];
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /** Tools the model may call (ADR 0001). Adapters translate to native format. */
+  readonly tools?: readonly ToolDef[];
 }
 
 export interface ChatResponse {
@@ -19,6 +25,8 @@ export interface ChatResponse {
   readonly timing: Timing;
   /** Provider-reported total tokens, when available. */
   readonly tokens?: number;
+  /** Tool calls the model emitted, normalized across providers (ADR 0001). */
+  readonly toolCalls?: readonly ToolCall[];
 }
 
 /** Per-call dependencies, all injectable so adapters are testable without network. */

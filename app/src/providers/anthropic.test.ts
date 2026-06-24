@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AnthropicProvider, parseAnthropicChunk } from './anthropic';
+import { AnthropicProvider, parseAnthropicChunk, toAnthropicMessages } from './anthropic';
 import type { FetchInit, FetchResponse } from './types';
 import { ProviderError } from './types';
 
@@ -16,6 +16,30 @@ function fakeClock(seq: readonly number[]): () => number {
   let i = 0;
   return () => seq[i++] ?? seq[seq.length - 1] ?? 0;
 }
+
+describe('toAnthropicMessages', () => {
+  it('extracts system and keeps plain turns as strings', () => {
+    const { system, msgs } = toAnthropicMessages([
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: 'hi' },
+    ]);
+    expect(system).toBe('SYS');
+    expect(msgs).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+  it('serializes tool_use blocks and groups tool_result into a user turn with matching ids', () => {
+    const { msgs } = toAnthropicMessages([
+      { role: 'user', content: 'weather?' },
+      { role: 'assistant', content: 'checking', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] },
+      { role: 'tool', toolName: 'get_weather', content: '{"tempC":18}' },
+    ]);
+    const asst = msgs[1] as { content: Array<{ type: string; id?: string; name?: string }> };
+    const userResult = msgs[2] as { role: string; content: Array<{ type: string; tool_use_id: string }> };
+    const useBlock = asst.content.find((b) => b.type === 'tool_use');
+    expect(useBlock?.name).toBe('get_weather');
+    expect(userResult.role).toBe('user');
+    expect(userResult.content[0]?.tool_use_id).toBe(useBlock?.id); // ids match
+  });
+});
 
 describe('parseAnthropicChunk', () => {
   it('should read a text delta', () => {
@@ -62,5 +86,32 @@ describe('AnthropicProvider.chat', () => {
     await expect(
       new AnthropicProvider().chat({ model: 'claude-sonnet-4.6', messages: [{ role: 'user', content: 'x' }] }, { apiKey: 'k', fetchImpl }),
     ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('should send tools (input_schema) and assemble a streamed tool_use block', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return {
+        ok: true,
+        status: 200,
+        body: streamFrom([
+          'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"get_weather"}}\n',
+          'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\":"}}\n',
+          'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"Paris\\"}"}}\n',
+        ]),
+        text: async () => '',
+      };
+    };
+    const res = await new AnthropicProvider().chat(
+      {
+        model: 'claude-sonnet-4.6',
+        messages: [{ role: 'user', content: 'weather?' }],
+        tools: [{ name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
+      },
+      { apiKey: 'k', fetchImpl, clock: fakeClock([0, 10, 20]) },
+    );
+    expect(res.toolCalls).toEqual([{ name: 'get_weather', arguments: { city: 'Paris' } }]);
+    expect(captured!.body).toContain('"input_schema"');
   });
 });

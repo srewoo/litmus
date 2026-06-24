@@ -5,3 +5,5 @@ coverage/
 .DS_Store
 .env
 .env.*
+litmus-extension-*.zip
+docs/adr/

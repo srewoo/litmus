@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scorePasses, summarizeRun, failingFirst } from './results';
+import { scorePasses, summarizeRun, failingFirst, foldSamples } from './results';
 import type { CaseResult, Timing } from '../shared/types';
 
 const timing: Timing = { ttfbMs: 100, totalMs: 1000, tokens: 10, tokensPerSec: 10 };
@@ -7,6 +7,26 @@ const timing: Timing = { ttfbMs: 100, totalMs: 1000, tokens: 10, tokensPerSec: 1
 function result(caseId: string, score: number): CaseResult {
   return { caseId, output: 'o', score, passed: score >= 6, rationale: 'r', timing };
 }
+
+describe('foldSamples', () => {
+  it('returns the single run unchanged when N=1', () => {
+    const folded = foldSamples([result('c1', 8)]);
+    expect(folded.score).toBe(8);
+    expect(folded.samples).toBeUndefined();
+  });
+  it('averages scores and records the spread across runs', () => {
+    const folded = foldSamples([result('c1', 9), result('c1', 6), result('c1', 9)]);
+    expect(folded.score).toBe(8); // mean(9,6,9)
+    expect(folded.samples).toMatchObject({ count: 3, min: 6, max: 9, passRate: 1 });
+    expect(folded.passed).toBe(true);
+    expect(folded.rationale).toMatch(/3 runs/);
+  });
+  it('fails the case when most samples fall below the threshold', () => {
+    const folded = foldSamples([result('c1', 3), result('c1', 8), result('c1', 2)], 6);
+    expect(folded.passed).toBe(false); // only 1 of 3 passed
+    expect(folded.samples?.passRate).toBeCloseTo(1 / 3);
+  });
+});
 
 describe('scorePasses', () => {
   it('should pass at or above the threshold (boundary inclusive)', () => {

@@ -7,7 +7,7 @@
  * to avoid repeating model calls while a session is alive.
  */
 import type { StorageArea } from './storage';
-import type { EvalCase, PromptAnalysis } from '../shared/types';
+import type { EvalCase, PromptAnalysis, ToolDef } from '../shared/types';
 import type { Dimension } from '../services/dimensionExtract';
 
 export interface SessionSnapshot {
@@ -18,7 +18,11 @@ export interface SessionSnapshot {
   readonly dimensions: Dimension[];
   readonly rubrics: Record<string, string>;
   readonly activeDimension: string;
+  /** Capture-step testing mode (ADR 0002 UX). */
+  readonly mode?: 'quality' | 'tools';
   readonly cases: EvalCase[];
+  /** Tool catalog for tool-test cases (ADR 0001). */
+  readonly tools: ToolDef[];
   /** Keys gating reuse of the suite / cases; null when not yet generated. */
   readonly suiteKey: string | null;
   readonly casesKey: string | null;
