@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>litmus — Privacy Policy</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+  <style>
+    body{background:var(--ground)}
+    .doc{max-width:720px;margin:0 auto;padding:28px 20px 64px}
+    .card{background:var(--surface);border:1px solid var(--line-soft);border-top:none;border-radius:0 0 14px 14px;padding:22px 24px 30px}
+    h1.title{font-family:var(--mono);font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+    .lede{color:var(--muted);font-size:14px;margin:0 0 6px}
+    .upd{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.13em;margin:0 0 18px}
+    h2{font-family:var(--mono);font-size:15px;font-weight:700;margin:26px 0 8px;letter-spacing:-.01em}
+    p,li{color:var(--text);font-size:13.5px;line-height:1.65}
+    p{margin:0 0 12px}
+    ul{margin:0 0 14px;padding-left:22px}
+    li{margin:5px 0}
+    code{font-family:var(--mono);font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+    .pill{display:inline-flex;gap:7px;align-items:center;background:var(--teal-dim);border:1px solid var(--teal-line);color:#0c6e5c;border-radius:999px;padding:5px 12px;font-family:var(--mono);font-size:11px;font-weight:700;margin:0 6px 8px 0}
+    .backbar{max-width:720px;margin:0 auto;padding:18px 20px 0}
+    .backlink{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--muted);text-decoration:none}
+    .backlink:hover{color:var(--teal)}
+    a{color:var(--teal)}
+  </style>
+</head>
+<body>
+  <div class="backbar"><a class="backlink" href="sidepanel.html">← Back to litmus</a></div>
+  <div class="doc">
+    <header class="head" style="border-radius:14px 14px 0 0;border-bottom:1px solid var(--line-soft)">
+      <span class="wordmark"><span class="flask"></span>litmus · Privacy</span>
+    </header>
+    <div class="card">
+      <h1 class="title">Privacy Policy</h1>
+      <p class="lede">litmus is local-first and bring-your-own-key. It has no servers of its own.</p>
+      <p class="upd">Last updated: June 2026</p>
+
+      <div>
+        <span class="pill">Local-first</span>
+        <span class="pill">No backend</span>
+        <span class="pill">No analytics</span>
+        <span class="pill">No tracking</span>
+      </div>
+
+      <h2>The short version</h2>
+      <p>litmus runs entirely inside your browser. Anthropic/the extension author does not operate any server that receives your prompts, API keys, results, or usage. The only network requests litmus makes are directly from your browser to the model provider you choose, in order to run the tests you ask for.</p>
+
+      <h2>What is stored, and where</h2>
+      <ul>
+        <li><b>API keys</b> — saved in your browser's extension storage (<code>chrome.storage.local</code>) on your device. They are used only to authenticate calls to the matching provider and are never transmitted anywhere else.</li>
+        <li><b>Prompts, eval rubrics, test cases, and run history</b> — kept locally in the browser (extension storage / IndexedDB) so your versions persist between sessions.</li>
+        <li><b>Settings</b> — your default model, judge model, pass threshold, and spend cap, stored locally.</li>
+      </ul>
+      <p>None of this is sent to litmus or to any third party other than the model provider during a run.</p>
+
+      <h2>What leaves your browser</h2>
+      <p>When you run an analysis, generate cases, run a test, or apply fixes, litmus sends the relevant content (your system prompt and the case inputs/outputs) to the provider you selected, using your key:</p>
+      <ul>
+        <li>OpenAI — <code>api.openai.com</code></li>
+        <li>Anthropic — <code>api.anthropic.com</code></li>
+        <li>Google — <code>generativelanguage.googleapis.com</code></li>
+      </ul>
+      <p>That data is handled under that provider's own privacy and data-use policies. Please review the policy of whichever provider you use. litmus does not add itself as an intermediary.</p>
+
+      <h2>What litmus does NOT do</h2>
+      <ul>
+        <li>No analytics, telemetry, or usage tracking.</li>
+        <li>No advertising, and no selling or sharing of your data.</li>
+        <li>No account, sign-in, or cloud sync.</li>
+        <li>No background data collection — requests are made only when you take an action.</li>
+      </ul>
+
+      <h2>Permissions</h2>
+      <p>The extension requests only what it needs to function: <code>sidePanel</code> (to show its UI), <code>storage</code> (to keep keys, settings, and version history locally), and <code>activeTab</code> / <code>scripting</code> (to let you grab a prompt from the current page when you click "Grab from this tab"). Host access is limited to the three provider API domains listed above.</p>
+
+      <h2>Deleting your data</h2>
+      <p>Use <b>Delete all keys</b> in Settings to remove stored API keys. Removing the extension from your browser clears all locally stored litmus data, including version history.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, the "Last updated" date above will change with it.</p>
+    </div>
+  </div>
+</body>
+</html>

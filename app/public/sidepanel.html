@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>litmus</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="head">
+      <span class="wordmark"><span class="flask"></span>litmus</span>
+      <span class="spacer"></span>
+      <button class="iconbtn" id="settingsBtn" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal hidden" id="settingsModal">
+      <div class="sheet">
+        <div class="sheethead"><span class="wordmark"><span class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose" aria-label="Close">✕</button></div>
+        <div class="sheetbody">
+          <div class="label" style="margin-top:0">API keys — stored only in this browser</div>
+          <div class="krow"><span class="kname">OpenAI</span><input class="field keyinput" id="keyOpenai" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedOpenai"></span></div>
+          <div class="krow"><span class="kname">Anthropic</span><input class="field keyinput" id="keyAnthropic" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedAnthropic"></span></div>
+          <div class="krow"><span class="kname">Google</span><input class="field keyinput" id="keyGoogle" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedGoogle"></span></div>
+          <button class="btn ghost block" id="loadModels" style="margin-top:6px">↻ Load models my keys can use</button>
+
+          <div class="label">Default model</div>
+          <div class="select"><span class="sl"><span class="pv">AI</span><select id="defaultModel"></select></span></div>
+
+          <div class="label">Judge model</div>
+          <div class="select"><span class="sl"><span class="pv">⚖</span><select id="judgeModel"></select></span></div>
+          <p class="hint2">The judge scores each output. Default "same as target" always works; pick a distinct model to reduce self-preference bias.</p>
+
+          <div class="label">Custom model ID (advanced)</div>
+          <input class="field" id="customModel" placeholder="provider/model — e.g. openai/gpt-5.4" autocomplete="off" spellcheck="false" />
+          <p class="hint2">Use this for a model not in the list, or one your key has special access to.</p>
+
+          <div class="tworow">
+            <div><div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold" type="number" min="0" max="10" step="0.5" /></div>
+            <div><div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0" step="0.05" /></div>
+          </div>
+
+          <div class="msg hidden" id="settingsMsg"></div>
+          <div class="btn-row">
+            <button class="btn ghost" id="deleteKeys" style="color:var(--coral);border-color:var(--coral-line)">Delete all keys</button>
+            <button class="btn primary block" id="saveSettings">Save settings</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rail" id="rail">
+      <span class="now"></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+    </div>
+
+    <div class="msg hidden" id="msg"></div>
+
+    <!-- 1 CAPTURE -->
+    <main class="body" id="view-capture">
+      <p class="kicker">What are we testing?</p>
+      <h1 class="h-lead">Grab your system prompt</h1>
+      <p class="sub">Grab the system prompt from whatever console you're on, or paste it.</p>
+
+      <div id="versionPickerWrap" class="hidden">
+        <div class="label" style="margin-top:0">Load a version from this session</div>
+        <div class="select"><span class="sl"><span class="pv">⎘</span>
+          <select id="versionPicker"></select></span>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin:0 0 10px"><button class="btn ghost block" id="grabBtn">⤓ Grab from this tab</button></div>
+      <textarea class="field" id="prompt" spellcheck="false">You are a support-triage assistant. Classify each ticket into Billing, Bug, How-to, or Account. Return JSON with category, urgency (1-5), and a short reason.</textarea>
+
+      <div class="label">Target model</div>
+      <div class="select"><span class="sl"><span class="pv">AI</span>
+        <select id="target"></select></span>
+      </div>
+
+      <div class="label">Output type</div>
+      <div class="chips" id="packs">
+        <button class="chip" data-pack="text" aria-pressed="true"><span class="ic">⌨︎</span><span class="nm">Text</span></button>
+        <button class="chip" data-pack="image" aria-pressed="false"><span class="ic">◳</span><span class="nm">Image</span><span class="badge beta">Beta</span></button>
+        <button class="chip" data-pack="voice" aria-pressed="false" disabled><span class="ic">◖</span><span class="nm">Voice</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="video" aria-pressed="false" disabled><span class="ic">▣</span><span class="nm">Video</span><span class="badge soon">Coming soon</span></button>
+      </div>
+
+      <div class="keybox hidden" id="keybox">
+        <div class="label" style="margin-top:0" id="keyLabel">Your API key (stored only in this browser)</div>
+        <div class="keyrow">
+          <input class="field keyinput" id="apiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" />
+          <button class="btn ghost" id="saveKey">Save</button>
+        </div>
+        <div class="keystatus" id="keyStatus"></div>
+      </div>
+
+      <div class="btn-row"><button class="btn primary block" id="analyzeBtn">Analyze prompt →</button></div>
+    </main>
+
+    <!-- 2 ANALYZE -->
+    <main class="body hidden" id="view-analyze">
+      <p class="kicker" id="analyzeKicker">Prompt analysis</p>
+      <h1 class="h-lead">Prompt analysis</h1>
+      <div id="facets"></div>
+      <div class="suggest" id="suggest"></div>
+      <div class="btn-row">
+        <button class="btn ghost" id="analyzeBackBtn">Back</button>
+        <button class="btn primary block" id="toEvalPromptBtn">Build eval prompt →</button>
+      </div>
+    </main>
+
+    <!-- 2.5 EVAL PROMPTS (one rubric per dimension) -->
+    <main class="body hidden" id="view-evalprompt">
+      <p class="kicker">The judges that score outputs</p>
+      <h1 class="h-lead">Evaluation prompts</h1>
+      <p class="sub">litmus found these dimensions and wrote a rubric for each. Edit any, or add your own.</p>
+      <div class="label">Dimensions</div>
+      <div class="dimchips" id="dimensionList"></div>
+      <div class="addrow">
+        <input class="field" id="newDimension" placeholder="add a dimension, e.g. groundedness" autocomplete="off" spellcheck="false" />
+        <button class="btn ghost" id="addDimBtn">+ Add</button>
+      </div>
+      <div class="label" id="activeDimLabel">Rubric</div>
+      <div class="rubrichealth" id="rubricHealth"></div>
+      <textarea class="field rubric" id="evalPromptText" spellcheck="false"></textarea>
+      <div class="btn-row">
+        <button class="btn ghost" id="epBackBtn">Back</button>
+        <button class="btn ghost" id="epRegenBtn">↻ Regenerate</button>
+        <button class="btn ghost" id="epCopyBtn">⧉ Copy</button>
+        <button class="btn ghost" id="coverageBtn">⚑ Coverage</button>
+      </div>
+      <div class="coverage hidden" id="coverageHost"></div>
+      <div class="btn-row"><button class="btn primary block" id="epContinueBtn">Generate cases →</button></div>
+    </main>
+
+    <!-- 3 CASES -->
+    <main class="body hidden" id="view-cases">
+      <p class="kicker">Eval cases · remove any you don't want</p>
+      <h1 class="h-lead">What we'll test against</h1>
+      <div id="casesHost"></div>
+      <div class="costbar"><span>Estimated cost</span><span class="costval" id="costLine"></span></div>
+      <div class="btn-row">
+        <button class="btn ghost" id="casesBackBtn">Back</button>
+        <button class="btn ghost" id="regenBtn">↻ Regenerate</button>
+        <button class="btn ghost" id="moreCasesBtn">+10 cases</button>
+        <button class="btn primary block" id="runBtn">Run on target →</button>
+      </div>
+    </main>
+
+    <!-- 4 RUN -->
+    <main class="body hidden" id="view-run">
+      <p class="kicker">Running · on your key</p>
+      <h1 class="h-lead">Generating &amp; judging</h1>
+      <div class="spinner"></div>
+      <p class="sub" id="runStatus" style="text-align:center"></p>
+    </main>
+
+    <!-- 5 RESULTS -->
+    <main class="body hidden" id="view-results">
+      <p class="kicker">Results</p>
+      <h1 class="h-lead">How this version scored</h1>
+      <div id="scoreHost"></div>
+      <p class="varnote">◷ Scores vary run-to-run — the target model is non-deterministic. A different score doesn't always mean a different prompt; re-run a version to see its spread.</p>
+      <div class="label">Speed · measured this run</div>
+      <div id="speedHost"></div>
+      <div class="rubrichealth hidden" id="rubricHost"></div>
+      <div class="label">Cases</div>
+      <div id="resultsHost"></div>
+      <div class="btn-row">
+        <button class="btn ghost" id="resultsBackBtn">Back</button>
+        <button class="btn ghost" id="resultsVersionsBtn">Versions</button>
+        <button class="btn primary block" id="fixBtn">What to fix →</button>
+      </div>
+    </main>
+
+    <!-- 6 FIXES -->
+    <main class="body hidden" id="view-fixes">
+      <p class="kicker">From the failing cases</p>
+      <h1 class="h-lead">Fix these, in order</h1>
+      <div id="fixesHost"></div>
+      <div class="btn-row">
+        <button class="btn ghost" id="fixesBackBtn">Back</button>
+        <button class="btn ghost" id="fixesVersionsBtn">Versions</button>
+        <button class="btn primary block" id="fixesEditBtn">Apply fixes &amp; re-run →</button>
+      </div>
+    </main>
+
+    <!-- 7 VERSIONS -->
+    <main class="body hidden" id="view-versions">
+      <p class="kicker">Every pass is kept</p>
+      <h1 class="h-lead">Versions</h1>
+      <div id="versionsHost"></div>
+      <div id="axisWrap" class="hidden">
+        <div class="label">Baseline → current · by dimension</div>
+        <div class="axis-key"><span class="a">◀ v1</span><span class="b">current ▶</span></div>
+        <div id="axisHost"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="versionsBackBtn">Back</button>
+        <button class="btn ghost" id="exportMd">⤓ .md</button>
+        <button class="btn ghost" id="exportJson">⤓ .json</button>
+        <button class="btn primary block" id="versionsEditBtn">Edit &amp; re-run →</button>
+      </div>
+    </main>
+
+    <div class="foot">
+      <span>litmus 0.1.0 · local-first · BYOK</span>
+      <span class="footlinks">
+        <a href="help.html" target="_blank" rel="noopener">Help</a>
+        <span class="dot">·</span>
+        <a href="privacypolicy.html" target="_blank" rel="noopener">Privacy</a>
+      </span>
+    </div>
+  </div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

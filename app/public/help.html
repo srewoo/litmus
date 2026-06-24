@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>litmus — Help</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+  <style>
+    body{background:var(--ground)}
+    .doc{max-width:760px;margin:0 auto;padding:28px 20px 64px}
+    .doc .head{border-radius:14px 14px 0 0;border:1px solid var(--line-soft);border-bottom:none}
+    .card{background:var(--surface);border:1px solid var(--line-soft);border-top:none;border-radius:0 0 14px 14px;padding:22px 24px 28px}
+    h1.title{font-family:var(--mono);font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+    .lede{color:var(--muted);font-size:14px;margin:0 0 22px;max-width:60ch}
+    h2{font-family:var(--mono);font-size:15px;font-weight:700;margin:30px 0 8px;letter-spacing:-.01em}
+    h3{font-family:var(--mono);font-size:13px;font-weight:700;margin:18px 0 5px}
+    p,li{color:var(--text);font-size:13.5px;line-height:1.65}
+    p{margin:0 0 12px}
+    ul,ol{margin:0 0 14px;padding-left:22px}
+    li{margin:4px 0}
+    .kicker{margin-top:8px}
+    code{font-family:var(--mono);font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+    .shot{margin:14px 0 6px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);overflow:hidden}
+    .shot svg{display:block;width:100%;height:auto}
+    .cap{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.13em;margin:0 0 18px}
+    .step{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line-soft)}
+    .step:first-of-type{border-top:none}
+    .num{flex:none;width:26px;height:26px;border-radius:8px;background:var(--teal-dim);border:1px solid var(--teal-line);color:var(--teal);font-family:var(--mono);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;margin-top:1px}
+    .step h3{margin:1px 0 4px}
+    .step p{margin:0;color:var(--muted);font-size:13px}
+    .tip{display:flex;gap:10px;background:var(--teal-dim);border:1px solid var(--teal-line);border-radius:9px;padding:11px 13px;margin:10px 0;font-size:13px;color:#0c6e5c}
+    .tip b{color:#0a5a4c}
+    .backbar{max-width:760px;margin:0 auto;padding:18px 20px 0}
+    .backlink{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--muted);text-decoration:none}
+    .backlink:hover{color:var(--teal)}
+    details{border:1px solid var(--line-soft);border-radius:9px;padding:2px 13px;margin:8px 0;background:var(--surface)}
+    summary{font-family:var(--mono);font-size:12.5px;font-weight:600;cursor:pointer;padding:10px 0}
+    details p{padding-bottom:6px}
+  </style>
+</head>
+<body>
+  <div class="backbar"><a class="backlink" href="sidepanel.html">← Back to litmus</a></div>
+  <div class="doc">
+    <header class="head" style="border-radius:14px 14px 0 0;border-bottom:1px solid var(--line-soft)">
+      <span class="wordmark"><span class="flask"></span>litmus · Help</span>
+    </header>
+    <div class="card">
+      <p class="kicker label" style="margin:0 0 9px">Getting started</p>
+      <h1 class="title">Test a system prompt in 8 steps</h1>
+      <p class="lede">litmus runs your system prompt against the model you actually ship on, scores every output with an LLM judge, and keeps each attempt as a version you can compare. Everything runs locally in your browser with your own API keys.</p>
+
+      <h2>How it works at a glance</h2>
+      <div class="shot">
+        <!-- progress rail illustration -->
+        <svg viewBox="0 0 720 132" role="img" aria-label="The eight steps: Capture, Analyze, Build eval prompt, Cases, Run, Results, Fixes, Versions">
+          <rect width="720" height="132" fill="#F3F6F9"/>
+          <g font-family="ui-monospace,Menlo,monospace" font-size="12" font-weight="700">
+            <!-- connecting line -->
+            <line x1="60" y1="50" x2="660" y2="50" stroke="#DCE3EA" stroke-width="2"/>
+            <!-- nodes -->
+            <g>
+              <circle cx="60"  cy="50" r="13" fill="#0FA98E"/><text x="60"  y="54" text-anchor="middle" fill="#fff">1</text>
+              <circle cx="146" cy="50" r="13" fill="#0FA98E"/><text x="146" y="54" text-anchor="middle" fill="#fff">2</text>
+              <circle cx="232" cy="50" r="13" fill="#0FA98E"/><text x="232" y="54" text-anchor="middle" fill="#fff">3</text>
+              <circle cx="318" cy="50" r="13" fill="#0FA98E"/><text x="318" y="54" text-anchor="middle" fill="#fff">4</text>
+              <circle cx="404" cy="50" r="13" fill="#17C6A6"/><text x="404" y="54" text-anchor="middle" fill="#fff">5</text>
+              <circle cx="490" cy="50" r="13" fill="#17C6A6"/><text x="490" y="54" text-anchor="middle" fill="#fff">6</text>
+              <circle cx="576" cy="50" r="13" fill="#E5604A"/><text x="576" y="54" text-anchor="middle" fill="#fff">7</text>
+              <circle cx="660" cy="50" r="13" fill="#16202B"/><text x="660" y="54" text-anchor="middle" fill="#fff">8</text>
+            </g>
+            <g font-size="11" font-weight="600" fill="#5E6B7A" text-anchor="middle">
+              <text x="60"  y="92">Capture</text>
+              <text x="146" y="92">Analyze</text>
+              <text x="232" y="92">Eval</text><text x="232" y="106">prompt</text>
+              <text x="318" y="92">Cases</text>
+              <text x="404" y="92">Run</text>
+              <text x="490" y="92">Results</text>
+              <text x="576" y="92">Fixes</text>
+              <text x="660" y="92">Versions</text>
+            </g>
+          </g>
+        </svg>
+      </div>
+      <p class="cap">The progress rail at the top of the panel tracks where you are</p>
+
+      <h2>Before you start</h2>
+      <ol>
+        <li>Open the <b>⚙ Settings</b> panel (top-right gear).</li>
+        <li>Paste an API key for at least one provider — OpenAI, Anthropic, or Google. Keys are stored only in this browser and never leave it except to call that provider.</li>
+        <li>Optionally pick a <b>judge model</b> different from your target to reduce self-preference bias.</li>
+      </ol>
+
+      <h2>The eight steps</h2>
+
+      <div class="step"><div class="num">1</div><div>
+        <h3>Capture</h3>
+        <p>Paste the system prompt you want to test, or click <code>⤓ Grab from this tab</code> to pull one from the page. Pick the target model — the model you actually ship on.</p>
+      </div></div>
+
+      <div class="step"><div class="num">2</div><div>
+        <h3>Analyze</h3>
+        <p>litmus scores your prompt on language, intent, format, and tone for the chosen model, and lists concrete rewrite suggestions. This is read-only feedback — nothing is changed yet.</p>
+      </div></div>
+
+      <div class="step"><div class="num">3</div><div>
+        <h3>Build eval prompt</h3>
+        <p>litmus finds the quality dimensions your prompt's output should be judged on and generates a rigorous LLM-as-judge rubric for each. You can edit a rubric, regenerate one, add your own dimension, or check coverage.</p>
+      </div></div>
+
+      <div class="step"><div class="num">4</div><div>
+        <h3>Cases</h3>
+        <p>litmus generates a set of test cases — typical, edge, and adversarial inputs that match your prompt's real input contract. Remove any you don't want, regenerate the set, or add more (see tips below). The estimated cost updates live.</p>
+      </div></div>
+
+      <div class="step"><div class="num">5</div><div>
+        <h3>Run</h3>
+        <p>Each case is sent to your target model, then the judge scores the output against the rubric. Speed (time-to-first-byte, tokens/sec) is measured as it runs.</p>
+      </div></div>
+
+      <div class="step"><div class="num">6</div><div>
+        <h3>Results</h3>
+        <p>An overall score, pass/fail counts, a speed strip, and a per-case table. Failing cases sort to the top. Hover any case to read the judge's full rationale.</p>
+      </div></div>
+
+      <div class="shot">
+        <!-- results table illustration -->
+        <svg viewBox="0 0 720 220" role="img" aria-label="Results table with case, score and pass/fail columns">
+          <rect width="720" height="220" fill="#FFFFFF"/>
+          <rect x="0" y="0" width="720" height="40" fill="#F3F6F9"/>
+          <g font-family="ui-monospace,Menlo,monospace" font-size="11" font-weight="700" fill="#93A0AE" letter-spacing="1">
+            <text x="24" y="25">CASE</text><text x="560" y="25">SCORE</text><text x="660" y="25">P/F</text>
+          </g>
+          <g font-family="ui-monospace,Menlo,monospace" font-size="13" font-weight="700">
+            <line x1="0" y1="40"  x2="720" y2="40"  stroke="#E8EDF2"/>
+            <text x="24" y="66"  fill="#16202B">case-11</text><text x="576" y="66"  fill="#E5604A">2.0</text><text x="664" y="66"  fill="#E5604A">✕</text>
+            <line x1="0" y1="85"  x2="720" y2="85"  stroke="#E8EDF2"/>
+            <text x="24" y="111" fill="#16202B">case-7</text> <text x="576" y="111" fill="#E5604A">3.0</text><text x="664" y="111" fill="#E5604A">✕</text>
+            <line x1="0" y1="130" x2="720" y2="130" stroke="#E8EDF2"/>
+            <text x="24" y="156" fill="#16202B">case-12</text><text x="576" y="156" fill="#0FA98E">9.0</text><text x="664" y="156" fill="#0FA98E">✓</text>
+            <line x1="0" y1="175" x2="720" y2="175" stroke="#E8EDF2"/>
+            <text x="24" y="201" fill="#16202B">case-1</text> <text x="572" y="201" fill="#0FA98E">10.0</text><text x="664" y="201" fill="#0FA98E">✓</text>
+          </g>
+        </svg>
+      </div>
+      <p class="cap">Results — failing cases first, hover a row for the full rationale</p>
+
+      <div class="step"><div class="num">7</div><div>
+        <h3>Fixes</h3>
+        <p>From the failing cases, litmus proposes ranked, concrete edits to your prompt. Click <code>Apply fixes &amp; re-run →</code> to auto-apply every suggestion to your system prompt — you land back on Capture with the revised prompt, ready to review and run again.</p>
+      </div></div>
+
+      <div class="step"><div class="num">8</div><div>
+        <h3>Versions</h3>
+        <p>Every run is saved as a version. Compare the baseline against the latest by dimension, and export the whole history as Markdown or JSON.</p>
+      </div></div>
+
+      <h2>Tips &amp; shortcuts</h2>
+      <div class="tip"><span>＋</span><div><b>Need more coverage?</b> On the Cases step, click <code>+10 cases</code> to append ten fresh cases without losing the ones you have. litmus is told to avoid duplicating existing cases.</div></div>
+      <div class="tip"><span>⚡</span><div><b>No wasted calls.</b> The eval prompt and generated cases are cached for your session, so stepping back and forth never re-runs the model. Editing your prompt (including applying fixes) automatically refreshes them.</div></div>
+      <div class="tip"><span>←</span><div><b>Go back anytime.</b> Every step has a <code>Back</code> button, so you can revisit earlier steps without losing your place.</div></div>
+
+      <h2>FAQ</h2>
+      <details><summary>How many test cases are generated?</summary>
+        <p>The first generation produces 12 cases, spread across typical, edge, and adversarial inputs. Use <code>+10 cases</code> to add more, or <code>↻ Regenerate</code> to replace the set.</p>
+      </details>
+      <details><summary>Where do my API keys and data go?</summary>
+        <p>Keys are stored only in your browser's local extension storage. Your prompt and cases are sent only to the model provider you choose (OpenAI, Anthropic, or Google) to run the test. litmus has no backend and collects no analytics. See the <a href="privacypolicy.html">Privacy Policy</a>.</p>
+      </details>
+      <details><summary>Why use a separate judge model?</summary>
+        <p>A model judging its own output tends to be lenient with itself. Picking a different judge model reduces this self-preference bias and gives more trustworthy scores.</p>
+      </details>
+      <details><summary>What does the estimated cost mean?</summary>
+        <p>It's an estimate of the total API spend for a run, based on case count and average token sizes. If it exceeds your spend cap (set in Settings), the Run button is disabled until you raise the cap or trim cases.</p>
+      </details>
+    </div>
+  </div>
+</body>
+</html>
