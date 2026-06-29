@@ -30,6 +30,28 @@ export interface PromptAnalysis {
   readonly suggestions: readonly string[];
 }
 
+/* ---- Prompt builder (interactive system-prompt generator) ---- */
+
+/** A clarifying question turn from the prompt architect during the interview. */
+export interface BuilderQuestion {
+  readonly kind: 'question';
+  /** What litmus is asking the user this turn. */
+  readonly message: string;
+  /** Optional quick-reply suggestions the user can pick instead of typing. */
+  readonly suggestions: readonly string[];
+}
+
+/** The final turn: a complete, ready-to-use system prompt. */
+export interface BuilderPrompt {
+  readonly kind: 'prompt';
+  readonly systemPrompt: string;
+  /** One line on what was built and any assumptions made. */
+  readonly summary: string;
+}
+
+/** One model turn in the builder interview — either a question or the finished prompt. */
+export type PromptBuilderTurn = BuilderQuestion | BuilderPrompt;
+
 /* ---- Tools (Tier 1: single-turn tool-call assertions; see ADR 0001) ---- */
 
 /** A tool the target model may call. `parameters` is a JSON Schema object. */
@@ -83,6 +105,12 @@ export interface Scenario {
   readonly maxSteps: number;
   /** Optional substrings the final answer must contain (case-insensitive) to pass. */
   readonly successContains?: readonly string[];
+  /**
+   * When set, the scenario runs against a configured live MCP server (ADR 0003)
+   * instead of mock tools: tools are discovered from the server and calls are
+   * executed for real. `tools` is ignored in that case. Absent → mock path.
+   */
+  readonly mcpServerId?: string;
 }
 
 /* ---- Eval cases ---- */
@@ -163,6 +191,13 @@ export interface PromptVersion {
   readonly createdAt: number;
   readonly parentId: string | null;
   readonly note: string;
+  /**
+   * The target model this version was run against. Optional for backward
+   * compatibility with versions persisted before model became a comparison
+   * axis. Stamping it lets the litmus axis compare the SAME prompt across
+   * DIFFERENT models, not just prompt edits.
+   */
+  readonly target?: TargetModel;
 }
 
 export interface DimensionScore {

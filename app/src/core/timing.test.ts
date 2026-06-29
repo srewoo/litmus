@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateTokens, finalizeTiming, aggregateSpeed } from './timing';
+import { estimateTokens, finalizeTiming, aggregateSpeed, aggregateTrajectoryTiming } from './timing';
 import type { Timing } from '../shared/types';
 
 describe('estimateTokens', () => {
@@ -45,5 +45,25 @@ describe('aggregateSpeed', () => {
     expect(agg.ttfbMs).toBe(200); // mean(100,300)
     expect(agg.avgResponseMs).toBe(2000); // mean(1000,3000)
     expect(agg.tokensPerSec).toBe(50); // 200 tokens / 4s total
+  });
+});
+
+describe('aggregateTrajectoryTiming', () => {
+  const mk = (ttfbMs: number, totalMs: number, tokens: number): Timing => ({ ttfbMs, totalMs, tokens, tokensPerSec: 0 });
+
+  it('should be all zeros for an empty trajectory (e.g. aborted before any turn)', () => {
+    expect(aggregateTrajectoryTiming([])).toEqual({ ttfbMs: 0, totalMs: 0, tokens: 0, tokensPerSec: 0 });
+  });
+
+  it('should take the first turn TTFB, sum totals and tokens, and rate over summed seconds', () => {
+    const t = aggregateTrajectoryTiming([mk(200, 1000, 30), mk(500, 1000, 70)]);
+    expect(t.ttfbMs).toBe(200); // first turn's TTFB — when movement first appeared
+    expect(t.totalMs).toBe(2000); // summed across turns
+    expect(t.tokens).toBe(100); // summed
+    expect(t.tokensPerSec).toBe(50); // 100 tokens / 2s
+  });
+
+  it('should avoid divide-by-zero when every turn was instantaneous', () => {
+    expect(aggregateTrajectoryTiming([mk(0, 0, 5)]).tokensPerSec).toBe(0);
   });
 });

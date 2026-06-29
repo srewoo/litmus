@@ -47,4 +47,16 @@ describe('mergeSettings', () => {
   it('should store a custom model id', () => {
     expect(mergeSettings(current, { keys: {}, customModel: 'openai/gpt-5.4' }).customModel).toBe('openai/gpt-5.4');
   });
+  it('should set and then preserve judgeSamples and concurrency', () => {
+    const set = mergeSettings(current, { keys: {}, judgeSamples: 3, concurrency: 4 });
+    expect(set.judgeSamples).toBe(3);
+    expect(set.concurrency).toBe(4);
+    const kept = mergeSettings(set, { keys: {} }); // omitted → must not reset to default
+    expect(kept.judgeSamples).toBe(3);
+    expect(kept.concurrency).toBe(4);
+  });
+  it('should reject out-of-range judgeSamples and concurrency', () => {
+    expect(() => mergeSettings(current, { keys: {}, judgeSamples: 9 })).toThrow();
+    expect(() => mergeSettings(current, { keys: {}, concurrency: 99 })).toThrow();
+  });
 });

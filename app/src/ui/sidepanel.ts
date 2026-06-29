@@ -7,13 +7,14 @@ import { loadSettings, setKey, saveSettings, deleteAllKeys } from '../platform/s
 import { chromeLocal, chromeSession } from '../platform/chromeStorage';
 import { loadSnapshot, saveSnapshot } from '../platform/sessionCache';
 import { mergeSettings } from './settingsForm';
-import { IndexedDbStore } from '../platform/indexedDbStore';
+import { SessionTabStore, versionKeyForTab } from '../platform/sessionTabStore';
 import { getProvider } from '../providers';
 import { fetchModels } from '../providers/listModels';
 import type { ProviderId } from '../shared/types';
 import { parseTarget } from './target';
 import { buildWiring } from './providerDeps';
 import { analyzePrompt } from '../services/analysis';
+import { builderTurn } from '../services/promptBuilder';
 import { generateCases } from '../services/evalgen';
 import { generateToolCases } from '../services/toolGen';
 import { generateEvalPrompt } from '../services/evalPrompt';
@@ -30,7 +31,7 @@ import { applyFixes } from '../services/applyFixes';
 import type { RunOutcome } from '../services/run';
 import { estimateRun, exceedsCap, formatUsd } from '../core/cost';
 import { aggregateDimensions } from '../core/dimensions';
-import { buildAxis } from '../core/litmusAxis';
+import { buildAxis, describeComparison } from '../core/litmusAxis';
 import { buildMarkdownReport, buildJsonReport } from '../core/report';
 import type { ReportEntry } from '../core/report';
 import type { RunRecord } from '../platform/store';
@@ -48,15 +49,21 @@ import {
   axisRowsHtml,
   coverageHtml,
   rubricHealthHtml,
+  builderLogHtml,
   band,
 } from './views';
-import type { VersionVM } from './views';
-import type { EvalCase, PromptAnalysis, PromptVersion, TargetModel, ToolDef, ToolExpectation } from '../shared/types';
+import type { VersionVM, BuilderTurnVM } from './views';
+import { initMcpPanel } from './mcpPanel';
+import type { ChatMessage } from '../providers/types';
+import type { EvalCase, PromptAnalysis, PromptBuilderTurn, PromptVersion, TargetModel, ToolDef, ToolExpectation } from '../shared/types';
 import { ToolDefSchema, ScenarioSchema } from '../shared/schema';
 import { z } from 'zod';
 
 const STEPS = ['capture', 'analyze', 'evalprompt', 'cases', 'run', 'results', 'fixes', 'versions'] as const;
-type Step = (typeof STEPS)[number];
+
+/** All switchable views. `generate` (prompt builder) and `mcp` (MCP mode) are off-pipeline. */
+const VIEWS = [...STEPS, 'generate', 'mcp'] as const;
+type View = (typeof VIEWS)[number];
 
 /** How many cases the first generation produces, and how many "+more" adds per click. */
 const DEFAULT_CASE_COUNT = 12;
@@ -65,7 +72,26 @@ const TOOL_CASE_COUNT = 6;
 
 const area = chromeLocal();
 const session = chromeSession();
-const store = new IndexedDbStore();
+
+/**
+ * Resolve the session-storage key for THIS panel's tab. The per-tab side panel
+ * shows the active tab, so the active tab at resolve time is the panel's tab;
+ * SessionTabStore memoizes the result so every op in this session uses one key
+ * even if the active tab later changes. Falls back to a stable key off-browser
+ * (e.g. tests) where chrome.tabs is unavailable.
+ */
+async function resolveVersionKey(): Promise<string> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return versionKeyForTab(tabs[0]?.id);
+  } catch {
+    return versionKeyForTab(undefined);
+  }
+}
+
+// Version history is per-tab and lives in chrome.storage.session: empty for a
+// tab that hasn't run anything, and cleared when the tab closes (background.js).
+const store = new SessionTabStore(session, resolveVersionKey);
 
 interface AppState {
   prompt: string;
@@ -225,10 +251,11 @@ const html = (id: string, markup: string): void => {
   el(id).innerHTML = markup;
 };
 
-function show(step: Step): void {
-  for (const s of STEPS) el(`view-${s}`).classList.toggle('hidden', s !== step);
+function show(step: View): void {
+  for (const s of VIEWS) el(`view-${s}`).classList.toggle('hidden', s !== step);
+  // The rail tracks the test pipeline only; off-pipeline views (generate) clear it.
   const rail = el('rail').children;
-  const idx = STEPS.indexOf(step);
+  const idx = (STEPS as readonly string[]).indexOf(step);
   for (let i = 0; i < rail.length; i++) {
     (rail[i] as HTMLElement).className = i < idx ? 'done' : i === idx ? 'now' : '';
   }
@@ -360,8 +387,17 @@ function setMode(mode: 'quality' | 'tools'): void {
   state.mode = mode;
   el('modeQuality').setAttribute('aria-pressed', String(mode === 'quality'));
   el('modeTools').setAttribute('aria-pressed', String(mode === 'tools'));
+  el('modeMcp').setAttribute('aria-pressed', 'false');
   el('analyzeBtn').textContent = mode === 'tools' ? 'Set up tool & agent tests →' : 'Analyze prompt →';
   persistSession();
+}
+
+/** MCP is an off-pipeline mode: pressing its chip navigates to the MCP view. */
+function onMcpMode(): void {
+  el('modeQuality').setAttribute('aria-pressed', 'false');
+  el('modeTools').setAttribute('aria-pressed', 'false');
+  el('modeMcp').setAttribute('aria-pressed', 'true');
+  show('mcp');
 }
 
 /** The Capture primary button — routes by mode (rubric flow vs. straight to tests). */
@@ -385,6 +421,119 @@ async function onToToolTests(): Promise<void> {
   persistSession();
   await renderCasesView();
   (el('toolPanel') as HTMLDetailsElement).open = true;
+}
+
+/* ---- Prompt builder (interactive system-prompt generator) ---- */
+
+// The interview transcript shown to the user, and the raw turns sent to the model.
+// Kept module-level (like sessionVersions) so revisiting the builder keeps context.
+let builderLog: BuilderTurnVM[] = [];
+let builderConversation: ChatMessage[] = [];
+let builderGenerated = '';
+// True while a turn is in flight — renders a typing indicator at the end of the log.
+let builderPending = false;
+
+const BUILDER_GREETING =
+  "Tell me what you want this assistant to do — its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt.";
+
+const BUILDER_PENDING_BUBBLE =
+  '<div class="bub lit pending" aria-label="litmus is thinking"><span class="dots"><i></i><i></i><i></i></span></div>';
+
+function renderBuilderLog(): void {
+  html('builderLog', builderLogHtml(builderLog) + (builderPending ? BUILDER_PENDING_BUBBLE : ''));
+  const log = el('builderLog');
+  log.scrollTop = log.scrollHeight;
+}
+
+/** Open the builder, seeding a fresh interview only the first time (keeps state on revisit). */
+function openBuilder(): void {
+  setMessage('');
+  if (builderLog.length === 0) builderLog = [{ who: 'litmus', text: BUILDER_GREETING }];
+  renderBuilderLog();
+  show('generate');
+}
+
+/** Append a model turn to the transcript + raw conversation; surface a generated prompt. */
+function applyBuilderTurn(turn: PromptBuilderTurn): void {
+  builderConversation.push({ role: 'assistant', content: JSON.stringify(turn) });
+  if (turn.kind === 'question') {
+    builderLog.push({ who: 'litmus', text: turn.message, suggestions: turn.suggestions });
+    el('builderResultWrap').classList.add('hidden');
+    el('builderUseRow').classList.add('hidden');
+  } else {
+    builderGenerated = turn.systemPrompt;
+    if (turn.summary) builderLog.push({ who: 'litmus', text: turn.summary });
+    (el('builderResult') as HTMLTextAreaElement).value = turn.systemPrompt;
+    el('builderResultWrap').classList.remove('hidden');
+    el('builderUseRow').classList.remove('hidden');
+  }
+  renderBuilderLog();
+}
+
+async function runBuilderTurn(forceGenerate: boolean): Promise<void> {
+  let ctx;
+  try {
+    ctx = await wiring();
+  } catch (e) {
+    el('keybox').classList.remove('hidden');
+    show('capture');
+    return setMessage(e instanceof Error ? e.message : 'Add an API key in settings first.', 'info');
+  }
+  state.target = ctx.target;
+  const btnId = forceGenerate ? 'builderGenerateBtn' : 'builderSendBtn';
+  const done = busy(btnId, forceGenerate ? 'Writing…' : 'Thinking…');
+  builderPending = true;
+  renderBuilderLog();
+  try {
+    const turn = await builderTurn(
+      builderConversation,
+      { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: ctx.target.model },
+      forceGenerate,
+    );
+    builderPending = false;
+    applyBuilderTurn(turn);
+  } catch (err) {
+    builderPending = false;
+    renderBuilderLog();
+    setMessage(describeError(err), 'error');
+  } finally {
+    done();
+  }
+}
+
+/** Pull any text in the input box into the transcript as a user turn. */
+function pushBuilderInput(): boolean {
+  const input = (el('builderInput') as HTMLTextAreaElement).value.trim();
+  if (!input) return false;
+  builderLog.push({ who: 'you', text: input });
+  builderConversation.push({ role: 'user', content: input });
+  (el('builderInput') as HTMLTextAreaElement).value = '';
+  renderBuilderLog();
+  return true;
+}
+
+async function onBuilderSend(): Promise<void> {
+  setMessage('');
+  if (!pushBuilderInput()) return setMessage('Type what you want the prompt to do.', 'error');
+  await runBuilderTurn(false);
+}
+
+async function onBuilderGenerate(): Promise<void> {
+  setMessage('');
+  pushBuilderInput();
+  if (builderConversation.length === 0) return setMessage('Describe the prompt first, then generate.', 'error');
+  await runBuilderTurn(true);
+}
+
+/** Load the generated (and possibly edited) prompt into the capture flow. */
+function onBuilderUse(): void {
+  const text = (el('builderResult') as HTMLTextAreaElement).value.trim() || builderGenerated;
+  if (!text) return setMessage('Generate a prompt first.', 'error');
+  state.prompt = text;
+  (el('prompt') as HTMLTextAreaElement).value = text;
+  show('capture');
+  void refreshVersionPicker();
+  setMessage('Loaded your generated prompt — analyze or run it.');
 }
 
 async function onAnalyze(): Promise<void> {
@@ -506,6 +655,9 @@ async function onAddDimension(): Promise<void> {
     }
     state.rubrics = { ...state.rubrics, [name]: rubric };
     input.value = '';
+    // Coverage is computed over the dimension set — invalidate the cached panel.
+    el('coverageHost').innerHTML = '';
+    el('coverageHost').classList.add('hidden');
     selectDimension(name);
   } catch (err) {
     setMessage(describeError(err), 'error');
@@ -551,13 +703,24 @@ function onEvalPromptContinue(): void {
 
 async function onCheckCoverage(): Promise<void> {
   if (state.dimensions.length === 0) return;
+  const host = el('coverageHost');
+  // Toggle: if already shown, collapse it. If loaded but hidden, just re-show
+  // it (no model call). Only fetch coverage when there's nothing cached.
+  if (!host.classList.contains('hidden')) {
+    host.classList.add('hidden');
+    return;
+  }
+  if (host.innerHTML.trim()) {
+    host.classList.remove('hidden');
+    return;
+  }
   setMessage('');
   const done = busy('coverageBtn', 'Checking…');
   try {
     const ctx = await wiring();
     const rows = await analyzeCoverage(state.prompt, state.dimensions.map((d) => d.name), suiteDeps(ctx));
     html('coverageHost', coverageHtml(rows));
-    el('coverageHost').classList.remove('hidden');
+    host.classList.remove('hidden');
   } catch (err) {
     setMessage(describeError(err), 'error');
   } finally {
@@ -585,25 +748,46 @@ async function ensureCases(force: boolean): Promise<void> {
 async function renderCasesView(): Promise<boolean> {
   html('casesHost', casesListHtml(state.cases));
   const { settings, target, w } = await wiring();
-  const est = estimateRun({
-    caseCount: state.cases.length * Math.max(1, settings.samples),
-    targetModel: target.model,
-    judgeModel: w.auxModel,
-    analyzerModel: w.auxModel,
-    includeAnalysis: false,
-    includeEvalGen: false,
-    includeFixes: true,
-    avgInputTokens: 600,
-    avgOutputTokens: 400,
-  });
+  const toolsMode = state.mode === 'tools';
+  const samples = Math.max(1, settings.samples);
+  // Tool/agent cases are scored deterministically (no judge, no fixes pass). An
+  // agent scenario is a multi-turn loop, so it costs up to maxSteps model calls;
+  // a tool-assertion case is a single call. Quality cases keep the judge+fixes shape.
+  const est = toolsMode
+    ? estimateRun({
+        caseCount: state.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
+        targetModel: target.model,
+        judgeModel: w.auxModel,
+        analyzerModel: w.auxModel,
+        includeAnalysis: false,
+        includeEvalGen: false,
+        includeJudge: false,
+        includeFixes: false,
+        avgInputTokens: 600,
+        avgOutputTokens: 400,
+      })
+    : estimateRun({
+        caseCount: state.cases.length * samples,
+        targetModel: target.model,
+        judgeModel: w.auxModel,
+        analyzerModel: w.auxModel,
+        includeAnalysis: false,
+        includeEvalGen: false,
+        includeFixes: true,
+        judgeSamples: settings.judgeSamples,
+        avgInputTokens: 600,
+        avgOutputTokens: 400,
+      });
   const over = exceedsCap(est, settings.spendCapUsd);
   el('costLine').textContent = `${formatUsd(est.estUsd)} · ${est.totalCalls} calls · cap ${formatUsd(settings.spendCapUsd)}`;
   (el('runBtn') as HTMLButtonElement).disabled = over;
   // Tool/agent mode tests tools, not text outputs — hide the text-case generators.
-  const toolsMode = state.mode === 'tools';
   el('regenBtn').classList.toggle('hidden', toolsMode);
   el('moreCasesBtn').classList.toggle('hidden', toolsMode);
-  el('agentPanel').classList.toggle('hidden', false);
+  // The tool/agent authoring panels belong to tools mode only; in quality mode
+  // they duplicate the dedicated Tool & agent mode and just add clutter.
+  el('toolPanel').classList.toggle('hidden', !toolsMode);
+  el('agentPanel').classList.toggle('hidden', !toolsMode);
   setMessage(over ? 'Estimated cost exceeds your cap. Raise the cap or trim cases.' : '', over ? 'error' : 'info');
   show('cases');
   return over;
@@ -831,24 +1015,43 @@ async function onRun(): Promise<void> {
       rubric: combineRubrics(state.rubrics) || undefined,
       passThreshold: settings.passThreshold,
       samples: settings.samples,
+      judgeSamples: settings.judgeSamples,
+      concurrency: settings.concurrency,
       ...(state.tools.length ? { tools: state.tools } : {}),
+      ...(settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}),
     });
     state.outcome = outcome;
 
-    // Validate the rubric on this run (best-effort; extra judge calls).
-    const combined = combineRubrics(state.rubrics) || undefined;
-    state.rubricHealth = await validateRubric(state.prompt, state.cases, outcome.results, {
-      provider: w.judgeProvider,
-      apiKey: w.judgeKey,
-      model: w.auxModel,
-      rubric: combined,
-    }).catch(() => null);
+    // Rubric health is a quality-mode concept (it measures the judge rubric's
+    // discrimination/consistency). Tool & agent cases are scored deterministically
+    // with no rubric, so skip it — running it would only waste judge calls.
+    if (state.mode === 'tools') {
+      state.rubricHealth = null;
+    } else {
+      const combined = combineRubrics(state.rubrics) || undefined;
+      state.rubricHealth = await validateRubric(state.prompt, state.cases, outcome.results, {
+        provider: w.judgeProvider,
+        apiKey: w.judgeKey,
+        model: w.auxModel,
+        rubric: combined,
+      }).catch(() => null);
+    }
 
     const existing = await store.getVersions();
     const index = existing.length + 1;
     const prev = existing[existing.length - 1];
-    // Truthful note: only call it "edited" when the prompt text actually changed.
-    const note = index === 1 ? 'baseline' : prev && prev.text === state.prompt ? 're-run (no change)' : 'edited prompt';
+    // Truthful note: distinguish a prompt edit, a re-run, and a same-prompt model
+    // swap (the model-comparison case) so the timeline tells the right story.
+    const samePrompt = Boolean(prev && prev.text === state.prompt);
+    const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
+    const note =
+      index === 1
+        ? 'baseline'
+        : samePrompt
+          ? modelChanged
+            ? `same prompt · ${target.model}`
+            : 're-run (no change)'
+          : 'edited prompt';
     const version = {
       id: `v${index}`,
       index,
@@ -856,6 +1059,7 @@ async function onRun(): Promise<void> {
       note,
       parentId: state.lastVersionId,
       createdAt: Date.now(),
+      target: { provider: target.provider, model: target.model },
     };
     await store.putVersion(version);
     await store.putRun({
@@ -877,7 +1081,14 @@ async function onRun(): Promise<void> {
 }
 
 function renderResults(versionIndex: number): void {
-  const s = state.outcome!.summary;
+  // Results render only makes sense with a run in hand; guard the non-null access
+  // so an unexpected navigation (e.g. a restored session) can't crash the view.
+  if (!state.outcome) {
+    setMessage('No run to show — run an eval first.', 'info');
+    show('cases');
+    return;
+  }
+  const s = state.outcome.summary;
   const b = band(s.overall);
   html(
     'scoreHost',
@@ -894,6 +1105,11 @@ function renderResults(versionIndex: number): void {
     rubricNode.classList.add('hidden');
   }
   html('resultsHost', resultsTableHtml(state.outcome!.results, 6, state.cases));
+  // "What to fix" generates text-prompt rewrites from quality judging — irrelevant
+  // for deterministic tool/agent results. Hide it there and let Versions lead.
+  const toolsMode = state.mode === 'tools';
+  el('fixBtn').classList.toggle('hidden', toolsMode);
+  el('resultsVersionsBtn').classList.toggle('btn-primary-promote', toolsMode);
 }
 
 async function onFixes(): Promise<void> {
@@ -946,14 +1162,23 @@ async function onApplyFixesAndEdit(): Promise<void> {
   }
 }
 
-async function showVersions(): Promise<void> {
+// Versions + their runs, cached for the versions screen so the compare pickers
+// can re-render the axis without refetching from the store.
+let axisVersions: PromptVersion[] = [];
+const axisRuns = new Map<string, RunRecord | null>();
+// Which screen the Versions view was opened from, so Back returns there.
+let versionsReturnTo: View = 'results';
+
+async function showVersions(from: View = 'results'): Promise<void> {
+  versionsReturnTo = from;
   const versions = await store.getVersions();
-  const runs = new Map<string, RunRecord | null>();
+  axisVersions = versions;
+  axisRuns.clear();
   const vms: VersionVM[] = [];
   let prev: number | null = null;
   for (const v of versions) {
     const run = await store.getRun(v.id);
-    runs.set(v.id, run);
+    axisRuns.set(v.id, run);
     const overall = run?.summary.overall ?? 0;
     vms.push({
       label: `v${v.index}`,
@@ -963,24 +1188,56 @@ async function showVersions(): Promise<void> {
       avgSeconds: run ? round1(run.summary.speed.avgResponseMs / 1000) : 0,
       delta: prev === null ? null : round1(overall - prev),
       current: v.id === state.lastVersionId,
+      ...(v.target ? { model: v.target.model } : {}),
     });
     prev = overall;
   }
   html('versionsHost', versionsTimelineHtml(vms));
 
-  // Litmus axis: compare the baseline version against the latest, by dimension.
-  const first = versions[0];
-  const last = versions[versions.length - 1];
-  const firstDims = first ? runs.get(first.id)?.dimensions ?? [] : [];
-  const lastDims = last ? runs.get(last.id)?.dimensions ?? [] : [];
-  const axisWrap = el('axisWrap');
-  if (versions.length >= 2 && firstDims.length > 0 && lastDims.length > 0) {
-    html('axisHost', axisRowsHtml(buildAxis(firstDims, lastDims)));
-    axisWrap.classList.remove('hidden');
-  } else {
-    axisWrap.classList.add('hidden');
-  }
+  // Compare pickers: default to baseline (A) vs latest (B), preserving the old
+  // first-vs-last behavior, but let the user choose any two versions — which is
+  // how you compare the SAME prompt across two models.
+  fillCompareSelect(el('compareA') as HTMLSelectElement, versions[0]?.id ?? '');
+  fillCompareSelect(el('compareB') as HTMLSelectElement, versions[versions.length - 1]?.id ?? '');
+  renderAxisPair();
   show('versions');
+}
+
+/** Fill a compare dropdown with every version, selecting `selectedId`. */
+function fillCompareSelect(sel: HTMLSelectElement, selectedId: string): void {
+  sel.replaceChildren();
+  for (const v of axisVersions) {
+    const opt = document.createElement('option');
+    opt.value = v.id;
+    const model = v.target ? ` · ${v.target.model}` : '';
+    opt.textContent = `v${v.index}${model}`;
+    sel.appendChild(opt);
+  }
+  sel.value = selectedId;
+}
+
+/** Render the litmus axis for the two currently-selected versions, with a header. */
+function renderAxisPair(): void {
+  const axisWrap = el('axisWrap');
+  const aId = (el('compareA') as HTMLSelectElement).value;
+  const bId = (el('compareB') as HTMLSelectElement).value;
+  const a = axisVersions.find((v) => v.id === aId);
+  const b = axisVersions.find((v) => v.id === bId);
+  const aDims = a ? axisRuns.get(a.id)?.dimensions ?? [] : [];
+  const bDims = b ? axisRuns.get(b.id)?.dimensions ?? [] : [];
+  if (!a || !b || a.id === b.id || aDims.length === 0 || bDims.length === 0) {
+    axisWrap.classList.add('hidden');
+    return;
+  }
+  const cmp = describeComparison(
+    { label: `v${a.index}`, promptText: a.text, ...(a.target ? { model: a.target.model } : {}) },
+    { label: `v${b.index}`, promptText: b.text, ...(b.target ? { model: b.target.model } : {}) },
+  );
+  el('axisHeader').textContent = cmp.header;
+  el('axisKeyA').textContent = `◀ v${a.index}`;
+  el('axisKeyB').textContent = `v${b.index} ▶`;
+  html('axisHost', axisRowsHtml(buildAxis(aDims, bDims)));
+  axisWrap.classList.remove('hidden');
 }
 
 async function reportEntries(): Promise<ReportEntry[]> {
@@ -992,6 +1249,7 @@ async function reportEntries(): Promise<ReportEntry[]> {
       label: `v${v.index}`,
       note: v.note,
       prompt: v.text,
+      ...(v.target ? { model: v.target.model } : {}),
       run: run
         ? {
             overall: run.summary.overall,
@@ -1063,9 +1321,10 @@ async function refreshVersionPicker(): Promise<void> {
     const v = loadable[i];
     if (!v) continue;
     const score = scores.has(v.id) ? ` · ${round1(scores.get(v.id)!)}/10` : '';
+    const model = v.target ? ` · ${v.target.model}` : '';
     const opt = document.createElement('option');
     opt.value = v.id;
-    opt.textContent = `v${v.index} · ${v.note}${score}`;
+    opt.textContent = `v${v.index} · ${v.note}${model}${score}`;
     sel.appendChild(opt);
   }
   sel.value = '';
@@ -1127,6 +1386,8 @@ async function openSettings(): Promise<void> {
   (el('passThreshold') as HTMLInputElement).value = String(s.passThreshold);
   (el('spendCap') as HTMLInputElement).value = String(s.spendCapUsd);
   (el('samples') as HTMLInputElement).value = String(s.samples);
+  (el('judgeSamples') as HTMLInputElement).value = String(s.judgeSamples);
+  (el('concurrency') as HTMLInputElement).value = String(s.concurrency);
   setSettingsMsg('');
   el('settingsModal').classList.remove('hidden');
 }
@@ -1154,6 +1415,8 @@ async function onSaveSettings(): Promise<void> {
       passThreshold: Number((el('passThreshold') as HTMLInputElement).value),
       spendCapUsd: Number((el('spendCap') as HTMLInputElement).value),
       samples: Number((el('samples') as HTMLInputElement).value),
+      judgeSamples: Number((el('judgeSamples') as HTMLInputElement).value),
+      concurrency: Number((el('concurrency') as HTMLInputElement).value),
     });
     await saveSettings(area, next);
     // Rebuild the capture dropdown (it may now include a custom model) and apply the default.
@@ -1221,8 +1484,34 @@ function init(): void {
   wirePacks();
   el('analyzeBtn').addEventListener('click', () => onCapturePrimary());
   el('modeQuality').addEventListener('click', () => setMode('quality'));
-  el('modeTools').addEventListener('click', () => setMode('tools'));
+  // Tool & agent and MCP are direct-entry modes: clicking the chip jumps straight
+  // to their screen (Output quality stays on capture for the prompt → analyze flow).
+  el('modeTools').addEventListener('click', () => {
+    setMode('tools');
+    void onToToolTests();
+  });
+  el('modeMcp').addEventListener('click', () => onMcpMode());
   el('grabBtn').addEventListener('click', () => void onGrab());
+  el('buildBtn').addEventListener('click', () => openBuilder());
+  el('builderBackBtn').addEventListener('click', () => show('capture'));
+  el('builderSendBtn').addEventListener('click', () => void onBuilderSend());
+  el('builderGenerateBtn').addEventListener('click', () => void onBuilderGenerate());
+  el('builderUseBtn').addEventListener('click', () => onBuilderUse());
+  el('builderInput').addEventListener('keydown', (e) => {
+    const ev = e as KeyboardEvent;
+    if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault();
+      void onBuilderSend();
+    }
+  });
+  el('builderLog').addEventListener('click', (e) => {
+    const chip = (e.target as HTMLElement).closest('.sugg') as HTMLElement | null;
+    const fill = chip?.dataset['fill'];
+    if (fill === undefined) return;
+    const box = el('builderInput') as HTMLTextAreaElement;
+    box.value = fill;
+    box.focus();
+  });
   el('versionPicker').addEventListener('change', () => onPickVersion());
   el('saveKey').addEventListener('click', () => void onSaveKey());
   el('settingsBtn').addEventListener('click', () => void openSettings());
@@ -1253,13 +1542,25 @@ function init(): void {
   el('addScenarioBtn').addEventListener('click', () => void onAddScenario());
   el('casesBackBtn').addEventListener('click', () => show(state.mode === 'tools' ? 'capture' : 'evalprompt'));
   el('runBtn').addEventListener('click', () => void onRun());
+  // Click a result row to expand its full detail (question · tools · response · why).
+  el('resultsHost').addEventListener('click', (e) => {
+    const row = (e.target as HTMLElement).closest('.mrow') as HTMLElement | null;
+    if (!row) return;
+    const detail = row.nextElementSibling;
+    if (detail?.classList.contains('mdetail')) {
+      detail.classList.toggle('hidden');
+      row.classList.toggle('open');
+    }
+  });
   el('resultsBackBtn').addEventListener('click', () => show('cases'));
   el('fixBtn').addEventListener('click', () => void onFixes());
-  el('resultsVersionsBtn').addEventListener('click', () => void showVersions());
+  el('resultsVersionsBtn').addEventListener('click', () => void showVersions('results'));
   el('fixesBackBtn').addEventListener('click', () => show('results'));
-  el('fixesVersionsBtn').addEventListener('click', () => void showVersions());
+  el('fixesVersionsBtn').addEventListener('click', () => void showVersions('fixes'));
   el('fixesEditBtn').addEventListener('click', () => void onApplyFixesAndEdit());
-  el('versionsBackBtn').addEventListener('click', () => show('results'));
+  el('compareA').addEventListener('change', () => renderAxisPair());
+  el('compareB').addEventListener('change', () => renderAxisPair());
+  el('versionsBackBtn').addEventListener('click', () => show(versionsReturnTo));
   el('versionsEditBtn').addEventListener('click', () => goCapture());
   el('exportMd').addEventListener('click', () => void exportReport('md'));
   el('exportJson').addEventListener('click', () => void exportReport('json'));
@@ -1270,10 +1571,13 @@ function init(): void {
     if (Number.isInteger(i)) {
       state.cases.splice(i, 1);
       persistSession();
-      void showCases(false);
+      // Just re-render the (now shorter) list — removing a case must not trigger
+      // case regeneration (which would wipe tool/agent cases or fail without a key).
+      void renderCasesView();
     }
   });
   show('capture');
+  initMcpPanel({ onBack: () => { setMode(state.mode); show('capture'); } });
   void (async () => {
     await applyDefaults();
     await restoreSession();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scoreToHalfWidth, buildAxis, overallDelta } from './litmusAxis';
+import { scoreToHalfWidth, buildAxis, overallDelta, describeComparison } from './litmusAxis';
 import type { DimensionScore } from '../shared/types';
 
 describe('scoreToHalfWidth', () => {
@@ -47,5 +47,41 @@ describe('overallDelta', () => {
   });
   it('should return a negative delta on regression', () => {
     expect(overallDelta(8, 7.4)).toBe(-0.6);
+  });
+});
+
+describe('describeComparison', () => {
+  const base = { label: 'v1', promptText: 'You are a helpful assistant.', model: 'gpt-5.5' };
+
+  it('should classify identical prompt on different models as a model comparison', () => {
+    const c = describeComparison(base, { label: 'v2', promptText: base.promptText, model: 'claude-opus-4-8' });
+    expect(c.kind).toBe('model');
+    expect(c.header).toBe('Model · gpt-5.5 vs claude-opus-4-8');
+  });
+
+  it('should classify a changed prompt on the same model as a prompt comparison', () => {
+    const c = describeComparison(base, { label: 'v2', promptText: 'You are a terse assistant.', model: 'gpt-5.5' });
+    expect(c.kind).toBe('prompt');
+    expect(c.header).toBe('Prompt · v1 → v2');
+  });
+
+  it('should classify a changed prompt AND model as both', () => {
+    const c = describeComparison(base, { label: 'v2', promptText: 'Different.', model: 'gemini-3.5-pro' });
+    expect(c.kind).toBe('both');
+    expect(c.header).toContain('prompt + model');
+    expect(c.header).toContain('gpt-5.5 vs gemini-3.5-pro');
+  });
+
+  it('should report same when prompt and model are identical', () => {
+    const c = describeComparison(base, { label: 'v2', promptText: base.promptText, model: 'gpt-5.5' });
+    expect(c.kind).toBe('same');
+  });
+
+  it('should not treat a missing model on either side as a model change', () => {
+    const c = describeComparison(
+      { label: 'v1', promptText: 'p' },
+      { label: 'v2', promptText: 'p', model: 'gpt-5.5' },
+    );
+    expect(c.kind).toBe('same');
   });
 });

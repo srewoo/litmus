@@ -9,9 +9,21 @@ import type { FetchLike } from '../providers/types';
 import { VerdictSchema } from '../shared/schema';
 import { callJson } from './jsonCall';
 import { chatOptions } from './opts';
+import { aggregateVerdicts } from '../core/judgeAggregate';
+import type { AggregatedVerdict } from '../core/judgeAggregate';
+import { mapWithConcurrency } from '../shared/concurrency';
 import type { z } from 'zod';
 
 export type Verdict = z.infer<typeof VerdictSchema>;
+
+/** How many judge calls to run concurrently in an ensemble — keeps providers happy. */
+const JUDGE_ENSEMBLE_CONCURRENCY = 3;
+/**
+ * When sampling the judge more than once, use a small non-zero temperature so the
+ * samples actually vary — at temp 0 every call would be (near) identical and the
+ * ensemble would measure nothing. A single judge call still uses temp 0.
+ */
+const DEFAULT_ENSEMBLE_TEMPERATURE = 0.4;
 
 export interface JudgeDeps {
   readonly provider: Provider;
@@ -19,6 +31,13 @@ export interface JudgeDeps {
   readonly model: string;
   /** Optional generated eval-prompt rubric to score against (PRD §8.7). */
   readonly rubric?: string;
+  /**
+   * Run the judge this many times on the SAME output and fold to the MEDIAN, to
+   * cut single-call judge noise (default 1 = one call, no ensemble).
+   */
+  readonly judgeSamples?: number;
+  /** Sampling temperature for an ensemble; ignored for a single call. */
+  readonly judgeTemperature?: number;
   readonly fetchImpl?: FetchLike;
   readonly clock?: Clock;
   readonly signal?: AbortSignal;
@@ -70,16 +89,51 @@ export function parseVerdict(text: string): Verdict {
   return VerdictSchema.parse(json);
 }
 
+/** One judge call at a given temperature. */
+function judgeOnce(
+  systemPrompt: string,
+  caseInput: string,
+  output: string,
+  deps: JudgeDeps,
+  temperature: number,
+): Promise<Verdict> {
+  return callJson(
+    deps.provider,
+    { model: deps.model, messages: buildJudgeMessages(systemPrompt, caseInput, output, deps.rubric), temperature },
+    chatOptions(deps),
+    parseVerdict,
+  );
+}
+
 export async function judgeOutput(
   systemPrompt: string,
   caseInput: string,
   output: string,
   deps: JudgeDeps,
 ): Promise<Verdict> {
-  return callJson(
-    deps.provider,
-    { model: deps.model, messages: buildJudgeMessages(systemPrompt, caseInput, output, deps.rubric), temperature: 0 },
-    chatOptions(deps),
-    parseVerdict,
+  return judgeOnce(systemPrompt, caseInput, output, deps, 0);
+}
+
+/**
+ * Judge an output with self-consistency: run `judgeSamples` independent judge
+ * calls (concurrently, bounded) and fold to a median verdict whose rationale
+ * carries the panel's spread. `judgeSamples <= 1` is a single temp-0 call — the
+ * exact previous behaviour, so callers opt in to the cost of an ensemble.
+ */
+export async function judgeOutputEnsemble(
+  systemPrompt: string,
+  caseInput: string,
+  output: string,
+  deps: JudgeDeps,
+): Promise<AggregatedVerdict> {
+  const samples = Math.max(1, Math.floor(deps.judgeSamples ?? 1));
+  if (samples === 1) return aggregateVerdicts([await judgeOutput(systemPrompt, caseInput, output, deps)]);
+
+  const temperature = deps.judgeTemperature ?? DEFAULT_ENSEMBLE_TEMPERATURE;
+  const verdicts = await mapWithConcurrency(
+    Array.from({ length: samples }, (_, i) => i),
+    JUDGE_ENSEMBLE_CONCURRENCY,
+    () => judgeOnce(systemPrompt, caseInput, output, deps, temperature),
   );
+  return aggregateVerdicts(verdicts);
 }

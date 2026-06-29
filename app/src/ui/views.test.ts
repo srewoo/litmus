@@ -4,16 +4,71 @@ import {
   facetRowsHtml,
   casesListHtml,
   resultsTableHtml,
+  caseDetailHtml,
   fixesListHtml,
   versionsTimelineHtml,
   speedStripHtml,
   axisRowsHtml,
   coverageHtml,
   rubricHealthHtml,
+  builderLogHtml,
 } from './views';
+import type { BuilderTurnVM } from './views';
 import type { CaseResult, EvalCase, Timing } from '../shared/types';
 
 const timing: Timing = { ttfbMs: 600, totalMs: 1600, tokens: 10, tokensPerSec: 94 };
+
+describe('caseDetailHtml', () => {
+  const base = { caseId: 'case-1', score: 0, passed: false, rationale: 'because reasons', timing };
+
+  it('shows the question and the model response for a quality case', () => {
+    const c: EvalCase = { id: 'case-1', category: 'typical', input: 'What is 2+2?', pinned: false };
+    const html = caseDetailHtml({ ...base, output: 'The answer is 4.' }, c);
+    expect(html).toContain('Question');
+    expect(html).toContain('What is 2+2?');
+    expect(html).toContain('The answer is 4.');
+    expect(html).toContain('because reasons'); // full rationale, not truncated
+    expect(html).toContain('mdetail hidden'); // collapsed by default
+  });
+
+  it('lists the tools called for a tool case', () => {
+    const c: EvalCase = { id: 'case-1', category: 'typical', input: 'weather in Paris?', pinned: false, toolExpectations: { expectedTool: 'get_weather' } };
+    const output = JSON.stringify([{ name: 'get_weather', arguments: { city: 'Paris' } }]);
+    const html = caseDetailHtml({ ...base, output }, c);
+    expect(html).toContain('Tools called');
+    expect(html).toContain('get_weather');
+    expect(html).toContain('Paris');
+    expect(html).toContain('expected: get_weather');
+  });
+
+  it('renders the trajectory and final answer for an agent scenario', () => {
+    const c: EvalCase = {
+      id: 'case-1',
+      category: 'typical',
+      input: 'umbrella?',
+      pinned: false,
+      scenario: { goal: 'umbrella?', tools: [], maxSteps: 3 },
+    };
+    const traj = {
+      steps: [{ modelText: 'checking', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }], toolResults: [{ name: 'get_weather', result: { value: { rain: true } } }] }],
+      finalText: 'Yes, bring an umbrella.',
+      stopReason: 'final',
+    };
+    const html = caseDetailHtml({ ...base, output: JSON.stringify(traj), dimensions: [{ dimension: 'goal_completion', score: 10 }] }, c);
+    expect(html).toContain('Trajectory');
+    expect(html).toContain('get_weather');
+    expect(html).toContain('Final answer');
+    expect(html).toContain('Yes, bring an umbrella.');
+    expect(html).toContain('goal_completion');
+  });
+
+  it('escapes malicious output', () => {
+    const c: EvalCase = { id: 'case-1', category: 'typical', input: '<img src=x>', pinned: false };
+    const html = caseDetailHtml({ ...base, output: '<script>alert(1)</script>' }, c);
+    expect(html).not.toContain('<script>alert');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
 
 describe('esc', () => {
   it('should escape HTML-significant characters', () => {
@@ -93,6 +148,14 @@ describe('versionsTimelineHtml', () => {
     expect(html).toContain('▲ +1.6');
     expect(html).toContain('current');
   });
+
+  it('should render the model chip when a version recorded its target', () => {
+    const html = versionsTimelineHtml([
+      { label: 'v1', note: 'baseline', overall: 7, passLabel: '9/12', avgSeconds: 1.6, delta: null, current: false, model: 'gpt-5.5' },
+    ]);
+    expect(html).toContain('vmodel');
+    expect(html).toContain('gpt-5.5');
+  });
 });
 
 describe('axisRowsHtml', () => {
@@ -130,5 +193,34 @@ describe('rubricHealthHtml', () => {
 describe('speedStripHtml', () => {
   it('should convert ms to seconds', () => {
     expect(speedStripHtml({ ttfbMs: 600, avgResponseMs: 1600, tokensPerSec: 94 })).toContain('0.6s');
+  });
+});
+
+describe('builderLogHtml', () => {
+  const turns: BuilderTurnVM[] = [
+    { who: 'litmus', text: 'What format do you need?', suggestions: ['JSON', 'Prose'] },
+    { who: 'you', text: 'JSON with <category>' },
+  ];
+
+  it('should tag each bubble by who said it', () => {
+    const out = builderLogHtml(turns);
+    expect(out).toContain('class="bub lit"');
+    expect(out).toContain('class="bub you"');
+  });
+
+  it('should render suggestion chips carrying their fill text', () => {
+    const out = builderLogHtml(turns);
+    expect(out).toContain('data-fill="JSON"');
+    expect(out).toContain('data-fill="Prose"');
+  });
+
+  it('should escape user text to prevent HTML injection', () => {
+    const out = builderLogHtml([{ who: 'you', text: '<img src=x onerror=alert(1)>' }]);
+    expect(out).not.toContain('<img');
+    expect(out).toContain('&lt;img');
+  });
+
+  it('should omit the suggestion row when there are none', () => {
+    expect(builderLogHtml([{ who: 'litmus', text: 'hi' }])).not.toContain('suggrow');
   });
 });

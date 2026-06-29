@@ -18,6 +18,27 @@ export function band(score: number): 'hi' | 'mid' | 'lo' {
   return score >= 7.5 ? 'hi' : score >= 5 ? 'mid' : 'lo';
 }
 
+/** One bubble in the prompt-builder interview transcript. */
+export interface BuilderTurnVM {
+  readonly who: 'you' | 'litmus';
+  readonly text: string;
+  /** Quick-reply chips shown under a litmus question. */
+  readonly suggestions?: readonly string[];
+}
+
+/** Render the builder interview transcript. Suggestion chips carry their text in data-fill. */
+export function builderLogHtml(turns: readonly BuilderTurnVM[]): string {
+  return turns
+    .map((t) => {
+      const chips = (t.suggestions ?? [])
+        .map((s) => `<button class="sugg" data-fill="${esc(s)}">${esc(s)}</button>`)
+        .join('');
+      const chipWrap = chips ? `<div class="suggrow">${chips}</div>` : '';
+      return `<div class="bub ${t.who === 'you' ? 'you' : 'lit'}"><div class="bub-txt">${esc(t.text)}</div>${chipWrap}</div>`;
+    })
+    .join('');
+}
+
 const FACET_ICON: Record<AnalysisFacet, string> = { language: '✎', intent: '◎', format: '{ }', tone: '◑' };
 
 export function facetRowsHtml(facets: readonly FacetScore[]): string {
@@ -66,6 +87,87 @@ export function speedStripHtml(speed: RunSummary['speed']): string {
   );
 }
 
+/* ---- Per-case expandable detail (question · tools called · response · why) ---- */
+
+function parseJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+function prop(v: unknown, k: string): unknown {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>)[k] : undefined;
+}
+function compact(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  return typeof v === 'string' ? v : JSON.stringify(v);
+}
+function dfield(label: string, body: string): string {
+  return `<div class="dfield"><div class="dlabel">${esc(label)}</div>${body}</div>`;
+}
+function dtext(s: string): string {
+  return `<div class="dtext">${esc(s || '(empty)')}</div>`;
+}
+
+/** One agent-trajectory step: model text + the tool calls it made and their results. */
+function trajectoryStepHtml(step: unknown, i: number): string {
+  const text = compact(prop(step, 'modelText'));
+  const calls = (Array.isArray(prop(step, 'toolCalls')) ? (prop(step, 'toolCalls') as unknown[]) : [])
+    .map((tc) => `<code>${esc(compact(prop(tc, 'name')))}(${esc(compact(prop(tc, 'arguments')))})</code>`)
+    .join(' ');
+  const results = (Array.isArray(prop(step, 'toolResults')) ? (prop(step, 'toolResults') as unknown[]) : [])
+    .map((tr) => `<span class="dres">→ ${esc(compact(prop(tr, 'result')))}</span>`)
+    .join(' ');
+  const callLine = calls ? `<div class="dcall">${calls} ${results}</div>` : '';
+  return `<div class="dstep"><span class="dstepn">${i + 1}</span><div>${text ? dtext(text) : ''}${callLine}</div></div>`;
+}
+
+/**
+ * Expandable detail for one result row: the question asked, what tools were
+ * called (for tool/agent cases) or the model's response (for quality cases),
+ * the per-dimension scores, and the full rationale. Hidden until the row is
+ * clicked. Robust to the different `output` encodings (text, tool-call array,
+ * trajectory object).
+ */
+export function caseDetailHtml(r: CaseResult, c?: EvalCase): string {
+  const parts: string[] = [dfield('Question', dtext(c?.input ?? r.caseId))];
+
+  if (c?.scenario) {
+    const traj = parseJson(r.output);
+    const steps = Array.isArray(prop(traj, 'steps')) ? (prop(traj, 'steps') as unknown[]) : [];
+    parts.push(dfield('Trajectory', steps.length ? steps.map(trajectoryStepHtml).join('') : dtext('No steps.')));
+    const final = compact(prop(traj, 'finalText'));
+    if (final) parts.push(dfield('Final answer', dtext(final)));
+  } else if (c?.toolExpectations) {
+    const calls = parseJson(r.output);
+    const list = Array.isArray(calls) && calls.length
+      ? calls
+          .map((tc) => `<div class="dcall"><code>${esc(compact(prop(tc, 'name')))}</code> <span class="dargs">${esc(compact(prop(tc, 'arguments') ?? prop(tc, 'rawArguments')))}</span></div>`)
+          .join('')
+      : dtext('No tool was called.');
+    parts.push(dfield('Tools called', list));
+    const exp = c.toolExpectations;
+    const expBits = [
+      exp.expectedTool ? `expected: ${exp.expectedTool}` : '',
+      exp.forbiddenTools?.length ? `forbidden: ${exp.forbiddenTools.join(', ')}` : '',
+      exp.requiredArgs ? `required args: ${compact(exp.requiredArgs)}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    if (expBits) parts.push(dfield('Expected', dtext(expBits)));
+  } else {
+    parts.push(dfield('Response', dtext(r.output)));
+  }
+
+  if (r.dimensions?.length) {
+    const dims = r.dimensions.map((d) => `<span class="ddim">${esc(d.dimension)} ${d.score.toFixed(1)}</span>`).join('');
+    parts.push(dfield('Dimensions', `<div class="ddims">${dims}</div>`));
+  }
+  parts.push(dfield('Why', dtext(r.rationale)));
+  return `<div class="mdetail hidden">${parts.join('')}</div>`;
+}
+
 export function resultsTableHtml(
   results: readonly CaseResult[],
   threshold: number,
@@ -90,9 +192,10 @@ export function resultsTableHtml(
           : `<span class="spread">${r.samples.min}–${r.samples.max}</span>`
         : '';
       return (
-        `<div class="mrow"><div class="cse" title="${esc(tip)}">${idTag}${esc(detail)}</div>` +
+        `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">▸</span>${idTag}${esc(detail)}</div>` +
         `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}">${r.score.toFixed(1)}${spread}</div>` +
-        `<div class="cell">${mark}</div></div>`
+        `<div class="cell">${mark}</div></div>` +
+        caseDetailHtml(r, c)
       );
     })
     .join('');
@@ -169,6 +272,8 @@ export interface VersionVM {
   readonly avgSeconds: number;
   readonly delta: number | null;
   readonly current: boolean;
+  /** The model this version ran on, shown as a chip; absent on legacy versions. */
+  readonly model?: string;
 }
 
 export function versionsTimelineHtml(items: readonly VersionVM[]): string {
@@ -180,8 +285,9 @@ export function versionsTimelineHtml(items: readonly VersionVM[]): string {
           ? '<span class="vd flat">baseline</span>'
           : `<span class="vd ${v.delta >= 0 ? 'up' : 'down'}">${v.delta >= 0 ? '▲ +' : '▼ '}${Math.abs(v.delta).toFixed(1)}</span>`;
       const cur = v.current ? '<span class="vcur">current</span>' : '';
+      const model = v.model ? `<span class="vmodel" title="ran on ${esc(v.model)}">${esc(v.model)}</span>` : '';
       return (
-        `<div class="ver${v.delta === null ? ' base' : ''}"><div class="vh"><span class="vt">${esc(v.label)}</span>${cur}${deltaHtml}` +
+        `<div class="ver${v.delta === null ? ' base' : ''}"><div class="vh"><span class="vt">${esc(v.label)}</span>${cur}${model}${deltaHtml}` +
         `<span class="vsc">${v.overall.toFixed(1)} · ${esc(v.passLabel)} · ${v.avgSeconds}s</span></div>` +
         `<div class="vnote">${esc(v.note)}</div></div>`
       );

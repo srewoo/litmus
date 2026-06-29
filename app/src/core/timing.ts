@@ -22,6 +22,26 @@ export function finalizeTiming(m: StreamMeasurement, tokens?: number): Timing {
 }
 
 /**
+ * Aggregate a multi-turn agent trajectory's per-turn timings into ONE Timing for
+ * the case. TTFB is the first turn's TTFB (when the user first sees movement);
+ * totalMs/tokens are summed across turns; tokens/sec is over the summed seconds.
+ * An empty list (e.g. an aborted scenario before any turn) is all-zero. Pure.
+ */
+export function aggregateTrajectoryTiming(timings: readonly Timing[]): Timing {
+  const first = timings[0];
+  if (!first) return { ttfbMs: 0, totalMs: 0, tokens: 0, tokensPerSec: 0 };
+  const totalMs = round1(timings.reduce((acc, t) => acc + t.totalMs, 0));
+  const tokens = timings.reduce((acc, t) => acc + t.tokens, 0);
+  const seconds = totalMs / 1000;
+  return {
+    ttfbMs: round1(first.ttfbMs),
+    totalMs,
+    tokens,
+    tokensPerSec: seconds > 0 ? Math.round(tokens / seconds) : 0,
+  };
+}
+
+/**
  * Aggregate per-case timings into the run-level speed strip.
  * TTFB and response time are means; tokens/sec is computed over the run total
  * (sum of tokens over sum of seconds) so long cases are weighted fairly.

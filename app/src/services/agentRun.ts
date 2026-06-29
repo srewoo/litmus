@@ -6,7 +6,7 @@
  * the loop is unit-testable without provider multi-turn plumbing; a real adapter
  * supplies that step in slice a.2. No real tool is ever executed.
  */
-import type { DimensionScore, MockResult, MockTool, Scenario, ToolCall } from '../shared/types';
+import type { DimensionScore, MockResult, MockTool, Scenario, Timing, ToolCall } from '../shared/types';
 import { validateArgsSchema } from './toolAssert';
 import { round1 } from '../shared/num';
 
@@ -19,8 +19,15 @@ export interface AgentTurn {
   readonly toolName?: string;
 }
 
-/** One model turn: the assistant's text plus any tool calls it requested. */
-export type ModelStep = (turns: readonly AgentTurn[]) => Promise<{ text: string; toolCalls: readonly ToolCall[] }>;
+/**
+ * One model turn: the assistant's text plus any tool calls it requested, and
+ * optionally the turn's timing. `timing` is optional so hand-written test steps
+ * (and any non-provider step) need not synthesize one; a provider-backed step
+ * supplies it so the trajectory's latency can be aggregated (run.ts).
+ */
+export type ModelStep = (
+  turns: readonly AgentTurn[],
+) => Promise<{ text: string; toolCalls: readonly ToolCall[]; timing?: Timing }>;
 
 export interface ToolResultRecord {
   readonly name: string;
@@ -31,10 +38,21 @@ export interface ToolResultRecord {
   readonly argsValid: boolean;
 }
 
+/**
+ * Resolves one tool call to a result record (ADR 0003). This is the seam that
+ * lets the same loop run against deterministic mocks OR a live MCP server: the
+ * mock resolver (`defaultMockResolver`) replays scripted responses; the MCP
+ * resolver (`services/toolResolver.ts`) issues a real `tools/call`. `perToolIndex`
+ * is the 0-based count of prior calls to this same tool (mocks index into it).
+ */
+export type ToolResolver = (call: ToolCall, perToolIndex: number) => Promise<ToolResultRecord> | ToolResultRecord;
+
 export interface AgentStep {
   readonly modelText: string;
   readonly toolCalls: readonly ToolCall[];
   readonly toolResults: readonly ToolResultRecord[];
+  /** This model turn's latency, when the step reported it (provider-backed runs). */
+  readonly timing?: Timing;
 }
 
 export type StopReason = 'final' | 'max_steps' | 'aborted';
@@ -57,14 +75,32 @@ function resultToContent(r: MockResult): string {
   return 'error' in r ? JSON.stringify({ error: r.error }) : JSON.stringify(r.value ?? {});
 }
 
-/** Run the agent loop over a scenario. */
+/**
+ * The default tool resolver: deterministic mock tools from the scenario catalog
+ * (ADR 0002 behaviour, factored out so the loop can take other resolvers).
+ */
+export function defaultMockResolver(scenario: Scenario): ToolResolver {
+  const toolsByName = new Map(scenario.tools.map((t) => [t.name, t]));
+  return (call, perToolIndex) => {
+    const tool = toolsByName.get(call.name);
+    const { result, known } = mockRespond(tool, perToolIndex);
+    const argsValid = known && tool ? validateArgsSchema(call.arguments, tool.parameters).length === 0 : false;
+    return { name: call.name, result, known, argsValid };
+  };
+}
+
+/**
+ * Run the agent loop over a scenario. Tool dispatch goes through `resolver`,
+ * which defaults to the deterministic mock resolver so existing (ADR 0002) call
+ * sites are unchanged; an MCP resolver is passed in for live-server runs.
+ */
 export async function runAgent(
   systemPrompt: string,
   scenario: Scenario,
   step: ModelStep,
   signal?: AbortSignal,
+  resolver: ToolResolver = defaultMockResolver(scenario),
 ): Promise<Trajectory> {
-  const toolsByName = new Map(scenario.tools.map((t) => [t.name, t]));
   const callCounts = new Map<string, number>();
   const turns: AgentTurn[] = [
     { role: 'system', content: systemPrompt },
@@ -74,23 +110,21 @@ export async function runAgent(
 
   for (let i = 0; i < scenario.maxSteps; i++) {
     if (signal?.aborted) return { steps, finalText: '', stopReason: 'aborted' };
-    const { text, toolCalls } = await step(turns);
+    const { text, toolCalls, timing } = await step(turns);
 
     if (toolCalls.length === 0) {
-      steps.push({ modelText: text, toolCalls: [], toolResults: [] });
+      steps.push({ modelText: text, toolCalls: [], toolResults: [], ...(timing ? { timing } : {}) });
       return { steps, finalText: text, stopReason: 'final' };
     }
 
-    const toolResults: ToolResultRecord[] = toolCalls.map((c) => {
+    const toolResults: ToolResultRecord[] = [];
+    for (const c of toolCalls) {
       const n = callCounts.get(c.name) ?? 0;
       callCounts.set(c.name, n + 1);
-      const tool = toolsByName.get(c.name);
-      const { result, known } = mockRespond(tool, n);
-      const argsValid = known && tool ? validateArgsSchema(c.arguments, tool.parameters).length === 0 : false;
-      return { name: c.name, result, known, argsValid };
-    });
+      toolResults.push(await resolver(c, n));
+    }
 
-    steps.push({ modelText: text, toolCalls, toolResults });
+    steps.push({ modelText: text, toolCalls, toolResults, ...(timing ? { timing } : {}) });
     turns.push({ role: 'assistant', content: text, toolCalls });
     for (const tr of toolResults) turns.push({ role: 'tool', toolName: tr.name, content: resultToContent(tr.result) });
   }

@@ -20,3 +20,12 @@ chrome.action.onClicked.addListener(async (tab) => {
     console.error('[litmus] open side panel:', err);
   }
 });
+
+// Version history is scoped per tab (chrome.storage.session key litmus:versions:<tabId>).
+// When the tab closes, drop its history so it doesn't outlive the tab or leak into a
+// future tab. Must stay in sync with VERSION_KEY_PREFIX in src/platform/sessionTabStore.ts.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session
+    .remove('litmus:versions:' + tabId)
+    .catch((err) => console.error('[litmus] clear tab versions:', err));
+});

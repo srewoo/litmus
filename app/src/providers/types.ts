@@ -56,13 +56,18 @@ export interface FetchResponse {
   readonly ok: boolean;
   readonly status: number;
   readonly body: ReadableStream<Uint8Array> | null;
+  /** Response headers, when the implementation exposes them (the global `fetch` does). */
+  readonly headers?: { get(name: string): string | null };
   text(): Promise<string>;
 }
 
 export type FetchLike = (url: string, init: FetchInit) => Promise<FetchResponse>;
 
 export function defaultFetch(): FetchLike {
-  return globalThis.fetch as unknown as FetchLike;
+  // Bind to the global: `fetch` throws "Illegal invocation" if invoked with a
+  // `this` other than the window (e.g. when stored as an object property and
+  // called as a method, as the MCP transport does).
+  return globalThis.fetch.bind(globalThis) as unknown as FetchLike;
 }
 
 /** Raised when a provider returns a non-OK HTTP status. Carries the status for retry/backoff. */

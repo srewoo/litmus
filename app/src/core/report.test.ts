@@ -7,6 +7,7 @@ const entries: ReportEntry[] = [
     label: 'v1',
     note: 'baseline',
     prompt: 'You are a bot.',
+    model: 'gpt-5.5',
     run: { overall: 6.8, passCount: 9, failCount: 3, total: 12, speed: { ttfbMs: 600, avgResponseMs: 1600, tokensPerSec: 94 } },
   },
   { label: 'v2', note: 'fixed schema', prompt: 'You are a better bot.', run: null },
@@ -20,6 +21,7 @@ describe('buildMarkdownReport', () => {
     expect(md).toContain('9/12 passed');
     expect(md).toContain('TTFB 0.6s');
     expect(md).toContain('baseline');
+    expect(md).toContain('Model: `gpt-5.5`');
     expect(md).toContain('You are a bot.');
     expect(md).toContain('_No run recorded._'); // v2
   });

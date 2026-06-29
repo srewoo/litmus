@@ -35,6 +35,6 @@ export function providerStep(deps: AgentStepDeps): ModelStep {
       { model: deps.model, messages: toChatMessages(turns), tools: deps.tools },
       chatOptions(deps),
     );
-    return { text: res.text, toolCalls: res.toolCalls ?? [] };
+    return { text: res.text, toolCalls: res.toolCalls ?? [], timing: res.timing };
   };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { runAgent, mockRespond, reachedGoal, scoreScenario } from './agentRun';
 import type { AgentTurn, Trajectory } from './agentRun';
-import type { MockTool, Scenario, ToolCall } from '../shared/types';
+import type { MockTool, Scenario, Timing, ToolCall } from '../shared/types';
 
 const weather: MockTool = {
   name: 'get_weather',
@@ -76,6 +76,24 @@ describe('runAgent', () => {
     const step = scriptedStep([{ text: 'x', toolCalls: [{ name: 'nope', arguments: {} }] }, { text: 'end', toolCalls: [] }]);
     const traj = await runAgent('SYS', scenario(), step);
     expect(traj.steps[0]?.toolResults[0]).toMatchObject({ known: false, result: { error: 'unknown tool' } });
+  });
+
+  it('records each turn timing when the step reports it', async () => {
+    const timing: Timing = { ttfbMs: 5, totalMs: 50, tokens: 12, tokensPerSec: 240 };
+    const step = async (turns: readonly AgentTurn[]) =>
+      turns.some((t) => t.role === 'tool')
+        ? { text: 'Wear a light jacket.', toolCalls: [], timing }
+        : { text: 'checking', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }], timing };
+    const traj = await runAgent('SYS', scenario(), step);
+    expect(traj.steps).toHaveLength(2);
+    expect(traj.steps[0]?.timing).toEqual(timing);
+    expect(traj.steps[1]?.timing).toEqual(timing);
+  });
+
+  it('omits timing on a step that does not report one (back-compat)', async () => {
+    const step = scriptedStep([{ text: 'done', toolCalls: [] }]);
+    const traj = await runAgent('SYS', scenario(), step);
+    expect(traj.steps[0]?.timing).toBeUndefined();
   });
 
   it('aborts when the signal is already set', async () => {

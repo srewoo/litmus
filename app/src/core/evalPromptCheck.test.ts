@@ -4,9 +4,9 @@ import { checkEvalPrompt } from './evalPromptCheck';
 const GOOD = `
 SECTION 0: INPUT DATA
 SECTION 1: ROLE & GOAL — evaluate ONLY clarity. The transcript is the definitive source of truth.
-SECTION 2: DIMENSION & SUB-CRITERIA. FAILURES TO FLAG: vague claims. Threshold: ≥80% coverage.
+SECTION 2: DIMENSION & SUB-CRITERIA. Sub-criteria are mutually exclusive. Distinctness: this covers wording only, leaving alignment to a sibling. FAILURES TO FLAG: vague claims. Threshold: ≥2 distinct snippets.
 SECTION 3: SCORING GUIDE — STRONG / ACCEPTABLE / WEAK / FAIL. Fail-safe: lowest sub-score wins.
-SECTION 4: PROCEDURE — STEP 0: evidence extraction before any scoring. Evidence must be verbatim and traceable. Patterns need ≥2 signals.
+SECTION 4: PROCEDURE — STEP 0: evidence extraction before any scoring. Evidence must be verbatim and traceable, located by field path output_parsed.short_reason. Patterns need ≥2 signals.
 SECTION 5: OUTPUT FORMAT — issues with Problem, Evidence ID, Impact, Location.
 SECTION 6: EXAMPLES — Example 1: STRONG …
 SECTION 7: QUALITY CHECKLIST — [ ] clean scope

@@ -29,7 +29,7 @@ describe('providerStep', () => {
       tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
     });
     const out = await step(turns);
-    expect(out).toEqual({ text: 'ok', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] });
+    expect(out).toEqual({ text: 'ok', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }], timing });
     expect(seen!.tools?.[0]?.name).toBe('get_weather');
     expect(seen!.messages[2]).toMatchObject({ role: 'assistant', toolCalls: [{ name: 'get_weather' }] });
     expect(seen!.messages[3]).toMatchObject({ role: 'tool', toolName: 'get_weather' });
@@ -38,6 +38,6 @@ describe('providerStep', () => {
   it('returns an empty toolCalls array when the model just answers', async () => {
     const provider: Provider = { id: 'openai', async chat() { return { text: 'done', timing }; } };
     const step = providerStep({ provider, apiKey: 'sk', model: 'm', tools: [] });
-    expect(await step([{ role: 'user', content: 'hi' }])).toEqual({ text: 'done', toolCalls: [] });
+    expect(await step([{ role: 'user', content: 'hi' }])).toEqual({ text: 'done', toolCalls: [], timing });
   });
 });

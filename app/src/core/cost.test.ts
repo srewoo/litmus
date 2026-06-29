@@ -35,6 +35,18 @@ describe('estimateRun', () => {
     expect(e.totalCalls).toBe(7); // +1 +1 +1
     expect(e.estUsd).toBeCloseTo(0.0875, 6);
   });
+
+  it('should omit judge calls for deterministic (tool/agent) runs', () => {
+    const e = estimateRun({ ...base, includeAnalysis: false, includeEvalGen: false, includeFixes: false, includeJudge: false });
+    expect(e.totalCalls).toBe(2); // 2 generate, 0 judge
+    expect(e.estUsd).toBeCloseTo(0.025, 6); // 2 * 0.0125
+  });
+
+  it('should multiply judge calls by judgeSamples for an ensemble', () => {
+    const e = estimateRun({ ...base, includeAnalysis: false, includeEvalGen: false, includeFixes: false, judgeSamples: 3 });
+    expect(e.totalCalls).toBe(8); // 2 generate + 2 cases * 3 judges
+    expect(e.estUsd).toBeCloseTo(0.1, 6); // 8 * 0.0125
+  });
 });
 
 describe('exceedsCap', () => {

@@ -27,6 +27,10 @@ export interface LoopDeps {
   readonly now: number;
   readonly passThreshold?: number;
   readonly caseCount?: number;
+  /** Judge each quality case this many times and fold to the median (cuts judge noise). */
+  readonly judgeSamples?: number;
+  /** How many cases to run at once (1 = sequential). */
+  readonly concurrency?: number;
   readonly fetchImpl?: FetchLike;
   readonly clock?: Clock;
   readonly signal?: AbortSignal;
@@ -68,6 +72,8 @@ export async function runLoopPass(input: PassInput, deps: LoopDeps): Promise<Pas
     judgeKey: deps.judgeKey,
     judgeModel: deps.auxModel,
     passThreshold: deps.passThreshold,
+    judgeSamples: deps.judgeSamples,
+    concurrency: deps.concurrency,
     fetchImpl: deps.fetchImpl,
     clock: deps.clock,
     signal: deps.signal,

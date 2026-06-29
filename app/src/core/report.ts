@@ -18,6 +18,8 @@ export interface ReportEntry {
   readonly note: string;
   readonly prompt: string;
   readonly run: ReportRun | null;
+  /** The model this version ran on, if recorded. */
+  readonly model?: string;
 }
 
 export function buildJsonReport(entries: readonly ReportEntry[]): string {
@@ -29,6 +31,7 @@ export function buildMarkdownReport(entries: readonly ReportEntry[]): string {
   if (entries.length === 0) lines.push('_No versions yet._');
   for (const e of entries) {
     lines.push(`## ${e.label}`);
+    if (e.model) lines.push(`- Model: \`${e.model}\``);
     if (e.run) {
       lines.push(
         `- Score: **${e.run.overall.toFixed(1)}/10** (${e.run.passCount}/${e.run.total} passed, ${e.run.failCount} failed)`,

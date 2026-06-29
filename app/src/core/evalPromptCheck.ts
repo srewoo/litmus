@@ -27,6 +27,19 @@ const RULES: readonly Rule[] = [
   { label: 'worked examples', test: /example\s*1|## example|example:/i },
   { label: 'quality checklist', test: /quality checklist|\[ \]|\[x\]/i },
   { label: 'all 8 sections present', test: /section\s*7/i },
+  // Quality gates that separate an A/A+ rubric from a merely well-structured one:
+  {
+    label: 'orthogonal sub-criteria (no duplicate conditions)',
+    test: /distinctness:|mutually exclusive|non-overlapping|does not overlap|exactly one sub-?crit|MECE/i,
+  },
+  {
+    label: 'observable/countable thresholds (not fuzzy ratios)',
+    test: /(?:≥|>=|at least )\s*\d+\s*(?:distinct\s+|verbatim\s+)?(?:signals?|snippets?|occurrences?|instances?|contradictions?|citations?|justifications?|labels?)\b/i,
+  },
+  {
+    label: 'evidence located by field path or quoted snippet',
+    test: /field path|output_parsed\.|quoted (?:phrase|snippet)|exact (?:quote|phrase|snippet)/i,
+  },
 ];
 
 export function checkEvalPrompt(text: string): EvalPromptCheck {

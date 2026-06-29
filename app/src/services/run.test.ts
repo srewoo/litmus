@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { runEval } from './run';
 import type { RunDeps } from './run';
-import type { Provider, ChatRequest } from '../providers/types';
+import type { Provider, ChatRequest, FetchLike, FetchResponse } from '../providers/types';
 import type { EvalCase, Timing } from '../shared/types';
+import type { McpServerConfig } from '../mcp/types';
 
 const timing: Timing = { ttfbMs: 100, totalMs: 1000, tokens: 10, tokensPerSec: 10 };
 
@@ -124,5 +125,151 @@ describe('runEval', () => {
     const { results } = await runEval('SYS', [scenarioCase], { ...baseDeps, targetProvider: agentTarget });
     expect(results[0]).toMatchObject({ caseId: 's1', passed: true, score: 10 });
     expect(results[0]?.rationale).toMatch(/reached the goal/);
+  });
+
+  it('should aggregate multi-turn timing across the trajectory (not zero)', async () => {
+    const turnTiming: Timing = { ttfbMs: 50, totalMs: 200, tokens: 20, tokensPerSec: 100 };
+    const agentTarget: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        const calledAlready = req.messages.some((m) => m.role === 'tool');
+        return calledAlready
+          ? { text: 'Wear a light jacket today.', timing: turnTiming }
+          : { text: 'checking', timing: turnTiming, toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] };
+      },
+    };
+    const scenarioCase: EvalCase = {
+      id: 's1', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [{ name: 'get_weather', description: 'current weather', parameters: { type: 'object' }, results: [{ value: { tempC: 16 } }] }], maxSteps: 4, successContains: ['jacket'] },
+    };
+    const { results, summary } = await runEval('SYS', [scenarioCase], { ...baseDeps, targetProvider: agentTarget });
+    expect(results[0]?.timing.ttfbMs).toBe(50); // first turn's TTFB
+    expect(results[0]?.timing.totalMs).toBe(400); // two turns × 200ms
+    expect(summary.speed.avgResponseMs).toBe(400);
+  });
+
+  it('should run cases concurrently while preserving result order', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slow: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight--;
+        const userTurn = req.messages.find((m) => m.role === 'user');
+        return { text: `out:${userTurn?.content ?? ''}`, timing };
+      },
+    };
+    const many: EvalCase[] = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, category: 'typical', input: `in${i}`, pinned: false }));
+    const { results } = await runEval('SYS', many, { ...baseDeps, targetProvider: slow, concurrency: 3 });
+    expect(results.map((r) => r.caseId)).toEqual(['c0', 'c1', 'c2', 'c3', 'c4', 'c5']); // order preserved
+    expect(maxInFlight).toBeGreaterThan(1); // genuinely ran in parallel
+    expect(maxInFlight).toBeLessThanOrEqual(3); // bounded by the limit
+  });
+
+  it('should carry per-dimension judge scores through to the case result', async () => {
+    const dimJudge: Provider = {
+      id: 'google',
+      async chat() {
+        return { text: '{"score":8,"rationale":"r","dimensions":[{"dimension":"format","score":9}]}', timing };
+      },
+    };
+    const one: EvalCase[] = [{ id: 'c1', category: 'typical', input: 'good input', pinned: false }];
+    const { results } = await runEval('SYS', one, { ...baseDeps, judgeProvider: dimJudge });
+    expect(results[0]?.dimensions).toEqual([{ dimension: 'format', score: 9 }]);
+  });
+
+  it('should score a tool case deterministically even when no tool catalog is supplied', async () => {
+    const toolTarget: Provider = {
+      id: 'openai',
+      async chat() {
+        return { text: '', timing, toolCalls: [{ name: 'x', arguments: {} }] };
+      },
+    };
+    const toolCases: EvalCase[] = [
+      { id: 't1', category: 'adversarial', input: 'go', pinned: false, toolExpectations: { forbiddenTools: ['danger'] } },
+    ];
+    // No `tools` in deps → the request omits a catalog, but deterministic scoring still runs.
+    const { results } = await runEval('SYS', toolCases, { ...baseDeps, targetProvider: toolTarget });
+    expect(results[0]).toMatchObject({ caseId: 't1', passed: true });
+  });
+
+  it('should run an MCP-backed scenario: connect, discover tools, score the trajectory', async () => {
+    // Fake JSON-RPC-over-HTTP server: answers initialize + tools/list; the agent
+    // finishes on turn 1, so tools/call is never needed.
+    const mcpFetch: FetchLike = async (_url, init) => {
+      const msg = JSON.parse(init.body ?? '{}') as { id: number; method: string };
+      const json = (result: unknown): FetchResponse => ({
+        ok: true,
+        status: 200,
+        body: null,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'application/json' : null) },
+        text: async () => JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }),
+      });
+      if (msg.method === 'initialize') {
+        return json({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } });
+      }
+      // A described tool exercises the description-carry path in tool mapping.
+      // One described tool and one without — covers both sides of the description-carry.
+      if (msg.method === 'tools/list') return json({ tools: [{ name: 'get_weather', description: 'current weather', inputSchema: { type: 'object' } }, { name: 'get_time', inputSchema: { type: 'object' } }] });
+      return { ok: true, status: 202, body: null, headers: { get: () => null }, text: async () => '' }; // notifications/initialized
+    };
+    const agentTarget: Provider = { id: 'openai', async chat() { return { text: 'Wear a jacket.', timing }; } };
+    const servers: McpServerConfig[] = [{ id: 'srv', name: 'demo', url: 'https://h/mcp', transport: 'http' }];
+    const scenarioCase: EvalCase = {
+      id: 'm1', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [], maxSteps: 3, successContains: ['jacket'], mcpServerId: 'srv' },
+    };
+    // Passing a signal exercises the signal-forwarding path into the MCP transport.
+    const { results } = await runEval('SYS', [scenarioCase], {
+      ...baseDeps,
+      targetProvider: agentTarget,
+      mcpServers: servers,
+      fetchImpl: mcpFetch,
+      signal: new AbortController().signal,
+    });
+    expect(results[0]).toMatchObject({ caseId: 'm1', passed: true });
+  });
+
+  it('should record a failed case when the provider throws a non-Error value', async () => {
+    const odd: Provider = {
+      id: 'openai',
+      async chat() {
+        throw 'boom'; // a non-Error throw — the catch must stringify it, not assume .message
+      },
+    };
+    const { results } = await runEval('SYS', [{ id: 'c1', category: 'typical', input: 'x', pinned: false }], { ...baseDeps, targetProvider: odd });
+    expect(results[0]?.passed).toBe(false);
+    expect(results[0]?.rationale).toContain('boom');
+  });
+
+  it('should record a scenario failure when its MCP server is not configured', async () => {
+    const agentTarget: Provider = { id: 'openai', async chat() { return { text: 'hi', timing }; } };
+    const scenarioCase: EvalCase = {
+      id: 'm2', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [], maxSteps: 2, mcpServerId: 'missing' },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], { ...baseDeps, targetProvider: agentTarget });
+    expect(results[0]?.passed).toBe(false);
+    expect(results[0]?.rationale).toMatch(/Run failed|not configured/);
+  });
+
+  it('should fold an ensemble judge to the median, resisting an outlier verdict', async () => {
+    const scores = [9, 9, 2];
+    let i = 0;
+    const ensembleJudge: Provider = {
+      id: 'google',
+      async chat() {
+        const s = scores[i++] ?? 9;
+        return { text: `{"score":${s},"rationale":"r"}`, timing };
+      },
+    };
+    const one: EvalCase[] = [{ id: 'c1', category: 'typical', input: 'good input', pinned: false }];
+    const { results } = await runEval('SYS', one, { ...baseDeps, judgeProvider: ensembleJudge, judgeSamples: 3 });
+    expect(i).toBe(3); // judged three times
+    expect(results[0]?.score).toBe(9); // median(9,9,2)
+    expect(results[0]?.rationale).toMatch(/median 9/);
   });
 });

@@ -20,6 +20,8 @@ export interface SettingsForm {
   readonly passThreshold?: number;
   readonly spendCapUsd?: number;
   readonly samples?: number;
+  readonly judgeSamples?: number;
+  readonly concurrency?: number;
 }
 
 /** Empty string clears an optional field; undefined leaves it unchanged. */
@@ -44,5 +46,7 @@ export function mergeSettings(current: Settings, form: SettingsForm): Settings {
     passThreshold: form.passThreshold ?? current.passThreshold,
     spendCapUsd: form.spendCapUsd ?? current.spendCapUsd,
     samples: form.samples ?? current.samples,
+    judgeSamples: form.judgeSamples ?? current.judgeSamples,
+    concurrency: form.concurrency ?? current.concurrency,
   });
 }

@@ -20,9 +20,20 @@ export const KeysSchema = z
   })
   .default({});
 
+/** A user-configured MCP server (ADR 0003). authHeader is a secret — local only. */
+export const McpServerConfigSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  url: z.string().url(),
+  transport: z.enum(['http', 'sse']).default('http'),
+  authHeader: z.string().min(1).optional(),
+});
+
 export const SettingsSchema = z.object({
   /** Provider keys live only in chrome.storage.local; see PRD §13. */
   keys: KeysSchema,
+  /** Configured MCP servers (ADR 0003). Stored locally; auth headers are secrets. */
+  mcpServers: z.array(McpServerConfigSchema).default([]),
   defaultTarget: TargetModelSchema.optional(),
   /** Optional judge-model override; when unset, the judge uses the target model. */
   judgeModel: z.string().min(1).optional(),
@@ -42,6 +53,10 @@ export const SettingsSchema = z.object({
   spendCapUsd: z.number().min(0).default(0.5),
   /** Run each case this many times to measure run-to-run variance. */
   samples: z.number().int().min(1).max(5).default(1),
+  /** Judge each quality output this many times and fold to the median (cuts judge noise). */
+  judgeSamples: z.number().int().min(1).max(5).default(1),
+  /** How many eval cases to run at once (1 = sequential). */
+  concurrency: z.number().int().min(1).max(8).default(1),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -191,7 +206,24 @@ export const MockToolSchema = z.object({
 
 export const ScenarioSchema = z.object({
   goal: z.string().min(1),
-  tools: z.array(MockToolSchema),
+  tools: z.array(MockToolSchema).default([]),
   maxSteps: z.number().int().min(1).max(20),
   successContains: z.array(z.string()).optional(),
+  /** Run against this configured MCP server instead of mock tools (ADR 0003). */
+  mcpServerId: z.string().min(1).optional(),
 });
+
+/* ---- Prompt builder turns (model output) ---- */
+
+export const PromptBuilderTurnSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('question'),
+    message: z.string().min(1),
+    suggestions: z.array(z.string()).default([]),
+  }),
+  z.object({
+    kind: z.literal('prompt'),
+    systemPrompt: z.string().min(1),
+    summary: z.string().default(''),
+  }),
+]);

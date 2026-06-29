@@ -38,6 +38,17 @@ export interface EstimateInput {
   readonly includeAnalysis: boolean;
   readonly includeEvalGen: boolean;
   readonly includeFixes: boolean;
+  /**
+   * Whether each case incurs an LLM judge call. Quality cases are judged;
+   * tool/agent cases are scored deterministically (no judge). Defaults to true
+   * for backward compatibility — pass false for deterministic runs.
+   */
+  readonly includeJudge?: boolean;
+  /**
+   * Judge calls per quality case. With ensemble judging (judge-variance
+   * reduction) each case is judged this many times. Defaults to 1.
+   */
+  readonly judgeSamples?: number;
   readonly avgInputTokens: number;
   readonly avgOutputTokens: number;
 }
@@ -65,7 +76,10 @@ export function estimateRun(input: EstimateInput): CostEstimate {
   if (input.includeAnalysis) add(input.analyzerModel, 1);
   if (input.includeEvalGen) add(input.analyzerModel, 1);
   add(input.targetModel, caseCount); // generation
-  add(input.judgeModel, caseCount); // judging
+  if (input.includeJudge !== false) {
+    const judgeSamples = Math.max(1, Math.floor(input.judgeSamples ?? 1));
+    add(input.judgeModel, caseCount * judgeSamples); // judging (×N for an ensemble)
+  }
   if (input.includeFixes) add(input.analyzerModel, 1);
 
   return { totalCalls: calls, estUsd: roundUsd(usd) };

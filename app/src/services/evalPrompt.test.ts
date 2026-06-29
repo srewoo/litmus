@@ -13,6 +13,14 @@ describe('buildEvalPromptMessages', () => {
     expect(sys).toContain('≥2 supporting signals');
     expect(sys).toContain('behavioral_clarity');
   });
+  it('should forbid duplicate eval conditions and un-computable thresholds', () => {
+    const sys = buildEvalPromptMessages('You are a judge.', 'coherence')[0]?.content ?? '';
+    expect(sys).toContain('ORTHOGONAL SUB-CRITERIA (MECE)');
+    expect(sys).toContain('Distinctness:');
+    expect(sys).toContain('mutually exclusive');
+    expect(sys).toContain('OBSERVABLE THRESHOLDS');
+    expect(sys).toContain('SELF-REVIEW');
+  });
   it('should carry the system prompt as the user turn and embed the hint', () => {
     const msgs = buildEvalPromptMessages('SYS', '', 'format: expects user_query and generated_answer');
     expect(msgs[1]).toEqual({ role: 'user', content: 'SYS' });
@@ -23,9 +31,9 @@ describe('buildEvalPromptMessages', () => {
 const STRONG_RUBRIC = [
   'SECTION 0: INPUT DATA',
   'SECTION 1: evaluate ONLY clarity. The transcript is the definitive source of truth.',
-  'SECTION 2: FAILURES TO FLAG: vague claims. Threshold ≥80%.',
+  'SECTION 2: sub-criteria are mutually exclusive. Distinctness: covers wording, leaves alignment to a sibling. FAILURES TO FLAG: vague claims. Threshold ≥2 distinct snippets.',
   'SECTION 3: STRONG / ACCEPTABLE / WEAK / FAIL. Fail-safe: lowest sub-score wins.',
-  'SECTION 4: STEP 0 evidence extraction before any scoring. Evidence verbatim & traceable. ≥2 signals.',
+  'SECTION 4: STEP 0 evidence extraction before any scoring. Evidence verbatim & traceable, located by field path output_parsed.short_reason. ≥2 signals.',
   'SECTION 5: issues with Impact and Location.',
   'SECTION 6: Example 1: STRONG',
   'SECTION 7: QUALITY CHECKLIST [ ]',
