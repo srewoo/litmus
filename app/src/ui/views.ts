@@ -191,9 +191,12 @@ export function resultsTableHtml(
           ? `<span class="spread">×${r.samples.count}</span>`
           : `<span class="spread">${r.samples.min}–${r.samples.max}</span>`
         : '';
+      // Non-color cue for the score: an aria-label spells out the value and
+      // pass/fail so screen readers and colorblind users aren't relying on hue.
+      const scoreAria = `score ${r.score.toFixed(1)}, ${r.passed ? 'passed' : 'failed'}`;
       return (
         `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">▸</span>${idTag}${esc(detail)}</div>` +
-        `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}">${r.score.toFixed(1)}${spread}</div>` +
+        `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div>` +
         `<div class="cell">${mark}</div></div>` +
         caseDetailHtml(r, c)
       );
@@ -219,6 +222,14 @@ export function fixesListHtml(fixes: readonly FixVM[]): string {
       );
     })
     .join('');
+}
+
+/**
+ * Header for the litmus-axis panel. Wraps the coined label in an inline
+ * glossary term so the plain-language definition is one hover away.
+ */
+export function axisHeaderHtml(label = 'By dimension'): string {
+  return `<span class="term" title="${TERM_LITMUS_AXIS}">${esc(label)}</span>`;
 }
 
 /** The litmus axis: diverging bars comparing an old version (coral) vs new (teal). */
@@ -253,14 +264,33 @@ export function coverageHtml(rows: ReadonlyArray<{ instruction: string; dimensio
   return head + body;
 }
 
-/** One-line rubric-health summary from a validation result. */
+const TERM_RUBRIC_HEALTH =
+  'How well your scoring rubric separates strong from weak answers.';
+const TERM_DISCRIMINATION =
+  'Whether the rubric gives clearly different scores to strong vs weak outputs. Higher gap = better separation.';
+const TERM_CONSISTENCY =
+  'How stable scores are when the same output is judged repeatedly (lower variation = more consistent).';
+const TERM_LITMUS_AXIS =
+  'What changed between two versions, broken down by quality dimension.';
+
+/**
+ * Rubric-health summary. Leads with a plain one-line verdict (always visible)
+ * and tucks the numeric discrimination/consistency detail inside an Advanced
+ * disclosure so the statistics are one click deeper.
+ */
 export function rubricHealthHtml(health: {
   discrimination: { gap: number; rating: string };
   consistency: { stdDev: number; rating: string };
 }): string {
+  const verdict =
+    `Discrimination <b>${esc(health.discrimination.rating)}</b>` +
+    ` · Consistency <b>${esc(health.consistency.rating)}</b>`;
   return (
-    `<span class="rh-disc">Discrimination ${health.discrimination.rating} (${health.discrimination.gap.toFixed(1)})</span>` +
-    ` · <span class="rh-cons">Consistency σ${health.consistency.stdDev.toFixed(1)} (${health.consistency.rating})</span>`
+    `<div class="rh-summary"><span class="term" title="${TERM_RUBRIC_HEALTH}">Rubric health</span>: ${verdict}</div>` +
+    `<details class="adv"><summary>Rubric health detail</summary>` +
+    `<span class="rh-disc"><span class="term" title="${TERM_DISCRIMINATION}">Discrimination</span> ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span>` +
+    ` · <span class="rh-cons"><span class="term" title="${TERM_CONSISTENCY}">Consistency</span> σ${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span>` +
+    `</details>`
   );
 }
 

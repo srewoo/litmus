@@ -86,7 +86,7 @@
       <h2>Before you start</h2>
       <ol>
         <li>Open the <b>⚙ Settings</b> panel (top-right gear).</li>
-        <li>Paste an API key for at least one provider — OpenAI, Anthropic, or Google. Keys are stored only in this browser and never leave it except to call that provider.</li>
+        <li><b>Add at least one API key</b> — for OpenAI, Anthropic, or Google. This is required: nothing in litmus works until at least one key is set. Keys are stored only in this browser and never leave it except to call that provider.</li>
         <li>Optionally pick a <b>judge model</b> different from your target to reduce self-preference bias.</li>
       </ol>
 
@@ -119,7 +119,7 @@
 
       <div class="step"><div class="num">6</div><div>
         <h3>Results</h3>
-        <p>An overall score, pass/fail counts, a speed strip, and a per-case table. Failing cases sort to the top. Hover any case to read the judge's full rationale.</p>
+        <p>An overall score, pass/fail counts, a speed strip, and a per-case table. Failing cases sort to the top. Click a case row to expand its full rationale from the judge.</p>
       </div></div>
 
       <div class="shot">
@@ -142,11 +142,11 @@
           </g>
         </svg>
       </div>
-      <p class="cap">Results — failing cases first, hover a row for the full rationale</p>
+      <p class="cap">Results — failing cases first, click a row to expand its full rationale</p>
 
       <div class="step"><div class="num">7</div><div>
         <h3>Fixes</h3>
-        <p>From the failing cases, litmus proposes ranked, concrete edits to your prompt. Click <code>Apply fixes &amp; re-run →</code> to auto-apply every suggestion to your system prompt — you land back on Capture with the revised prompt, ready to review and run again.</p>
+        <p>From the failing cases, litmus proposes ranked, concrete edits to your prompt. Click <code>Apply fixes &amp; review →</code> to apply every suggestion to your system prompt via an LLM rewrite — you land back on Capture with the revised prompt, where you review it and re-run when ready. It does not re-run automatically.</p>
       </div></div>
 
       <div class="step"><div class="num">8</div><div>

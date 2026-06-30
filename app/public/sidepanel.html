@@ -16,8 +16,8 @@
 
     <!-- SETTINGS MODAL -->
     <div class="modal hidden" id="settingsModal">
-      <div class="sheet">
-        <div class="sheethead"><span class="wordmark"><span class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose" aria-label="Close">✕</button></div>
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="sheethead"><span class="wordmark" id="settingsTitle"><span class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose" aria-label="Close">✕</button></div>
         <div class="sheetbody">
           <div class="label" style="margin-top:0">API keys — stored only in this browser</div>
           <div class="krow"><span class="kname">OpenAI</span><input class="field keyinput" id="keyOpenai" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedOpenai"></span></div>
@@ -36,21 +36,24 @@
           <input class="field" id="customModel" placeholder="provider/model — e.g. openai/gpt-5.4" autocomplete="off" spellcheck="false" />
           <p class="hint2">Use this for a model not in the list, or one your key has special access to.</p>
 
-          <div class="tworow">
-            <div><div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold" type="number" min="0" max="10" step="0.5" /></div>
-            <div><div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0" step="0.05" /></div>
-          </div>
-          <div class="label">Samples per case (variance)</div>
-          <input class="field numin" id="samples" type="number" min="1" max="5" step="1" />
-          <p class="hint2">Run each case N times to surface run-to-run variance. 1 is fastest; 3–5 reveals how noisy a score is (costs N× more).</p>
+          <details class="adv">
+            <summary>Advanced tuning — thresholds, samples, spend cap</summary>
+            <div class="tworow">
+              <div><div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold" type="number" min="0" max="10" step="0.5" /></div>
+              <div><div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0" step="0.05" /></div>
+            </div>
+            <div class="label">Samples per case (variance)</div>
+            <input class="field numin" id="samples" type="number" min="1" max="5" step="1" />
+            <p class="hint2">Run each case N times to surface run-to-run variance. 1 is fastest; 3–5 reveals how noisy a score is (costs N× more).</p>
 
-          <div class="tworow">
-            <div><div class="label">Judge samples (median)</div><input class="field numin" id="judgeSamples" type="number" min="1" max="5" step="1" /></div>
-            <div><div class="label">Concurrency (cases at once)</div><input class="field numin" id="concurrency" type="number" min="1" max="8" step="1" /></div>
-          </div>
-          <p class="hint2">Judge samples folds N judge calls to the median, cutting single-call judge noise (costs N× judge calls). Concurrency runs that many cases in parallel — faster on big suites, but watch provider rate limits.</p>
+            <div class="tworow">
+              <div><div class="label">Judge samples (median)</div><input class="field numin" id="judgeSamples" type="number" min="1" max="5" step="1" /></div>
+              <div><div class="label">Concurrency (cases at once)</div><input class="field numin" id="concurrency" type="number" min="1" max="8" step="1" /></div>
+            </div>
+            <p class="hint2">Judge samples folds N judge calls to the median, cutting single-call judge noise (costs N× judge calls). Concurrency runs that many cases in parallel — faster on big suites, but watch provider rate limits.</p>
+          </details>
 
-          <div class="msg hidden" id="settingsMsg"></div>
+          <div class="msg hidden" id="settingsMsg" role="status" aria-live="polite"></div>
           <div class="btn-row">
             <button class="btn ghost" id="deleteKeys" style="color:var(--coral);border-color:var(--coral-line)">Delete all keys</button>
             <button class="btn primary block" id="saveSettings">Save settings</button>
@@ -59,17 +62,23 @@
       </div>
     </div>
 
-    <div class="rail" id="rail">
+    <div class="rail" id="rail" role="progressbar" aria-label="Test pipeline progress" aria-valuemin="1" aria-valuemax="8" aria-valuenow="1">
       <span class="now"></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
     </div>
 
-    <div class="msg hidden" id="msg"></div>
+    <div class="msg hidden" id="msg" role="status" aria-live="polite"></div>
 
     <!-- 1 CAPTURE -->
     <main class="body" id="view-capture">
       <p class="kicker">What are we testing?</p>
       <h1 class="h-lead">Grab your system prompt</h1>
       <p class="sub">Grab the system prompt from whatever console you're on, or paste it.</p>
+
+      <div class="keybox onboard hidden" id="nokeyCard">
+        <div class="label" style="margin-top:0">Add an API key to start</div>
+        <p class="hint2" style="margin-top:0">litmus runs on your own key (OpenAI, Anthropic, or Google), stored only in this browser. Add one to begin.</p>
+        <button class="btn primary block" id="nokeyOpenSettings">⚙ Open Settings to add a key</button>
+      </div>
 
       <div id="versionPickerWrap" class="hidden">
         <div class="label" style="margin-top:0">Load a version from this tab</div>
@@ -82,7 +91,8 @@
         <button class="btn ghost block" id="grabBtn">⤓ Grab from this tab</button>
         <button class="btn ghost block" id="buildBtn">✦ Build one with AI</button>
       </div>
-      <textarea class="field" id="prompt" spellcheck="false">You are a support-triage assistant. Classify each ticket into Billing, Bug, How-to, or Account. Return JSON with category, urgency (1-5), and a short reason.</textarea>
+      <textarea class="field" id="prompt" spellcheck="false" placeholder="Paste your system prompt here — or grab it from the page, build one with AI, or load an example below."></textarea>
+      <button class="btn ghost block" id="loadExampleBtn" style="margin-top:8px">✎ Load an example prompt</button>
 
       <div class="label">What are you testing?</div>
       <div class="modes" id="modes">
@@ -114,6 +124,7 @@
       </div>
 
       <div class="btn-row"><button class="btn primary block" id="analyzeBtn">Analyze prompt →</button></div>
+      <div class="btn-row" id="quickRunRow" style="margin-top:8px"><button class="btn ghost block" id="quickRunBtn">⚡ Just run it — auto-generate &amp; score</button></div>
     </main>
 
     <!-- 1b BUILD (interactive prompt generator) -->
@@ -234,7 +245,9 @@
       <p class="kicker">Running · on your key</p>
       <h1 class="h-lead">Generating &amp; judging</h1>
       <div class="spinner"></div>
-      <p class="sub" id="runStatus" style="text-align:center"></p>
+      <p class="sub" id="runStatus" style="text-align:center" role="status" aria-live="polite"></p>
+      <p class="sub" id="runProgress" style="text-align:center" aria-live="polite"></p>
+      <div class="btn-row"><button class="btn ghost block" id="runCancelBtn">Cancel run</button></div>
     </main>
 
     <!-- 5 RESULTS -->
@@ -263,7 +276,7 @@
       <div class="btn-row">
         <button class="btn ghost" id="fixesBackBtn">Back</button>
         <button class="btn ghost" id="fixesVersionsBtn">Versions</button>
-        <button class="btn primary block" id="fixesEditBtn">Apply fixes &amp; re-run →</button>
+        <button class="btn primary block" id="fixesEditBtn">Apply fixes &amp; review →</button>
       </div>
     </main>
 
@@ -321,9 +334,9 @@
         <div id="mcpConformance"></div>
 
         <div class="mcptabs" id="mcpTabs" role="tablist">
-          <button class="mcptab" data-cat="tools" aria-pressed="true">Tools</button>
-          <button class="mcptab" data-cat="resources" aria-pressed="false">Resources</button>
-          <button class="mcptab" data-cat="prompts" aria-pressed="false">Prompts</button>
+          <button class="mcptab" data-cat="tools" role="tab" aria-selected="true">Tools</button>
+          <button class="mcptab" data-cat="resources" role="tab" aria-selected="false">Resources</button>
+          <button class="mcptab" data-cat="prompts" role="tab" aria-selected="false">Prompts</button>
         </div>
         <div id="mcpCatalog"></div>
 

@@ -4049,6 +4049,40 @@
 
   // src/shared/schema.ts
   var ProviderIdSchema = external_exports.enum(["openai", "anthropic", "google"]);
+  function isSafeHttpUrl(url) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const rawHost = parsed.hostname.toLowerCase();
+    const host = rawHost.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
+    if (host === "") return false;
+    if (host === "localhost" || host.endsWith(".localhost")) return false;
+    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4) {
+      const octets = ipv4.slice(1).map((o) => Number(o));
+      if (octets.some((o) => o > 255)) return false;
+      const [a, b] = octets;
+      if (a === 0) return false;
+      if (a === 10) return false;
+      if (a === 127) return false;
+      if (a === 169 && b === 254) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+      if (a === 192 && b === 168) return false;
+      return true;
+    }
+    if (host.includes(":")) {
+      if (host === "::1" || host === "::") return false;
+      const first = host.split(":")[0] ?? "";
+      if (/^f[cd]/.test(first)) return false;
+      if (/^fe[89ab]/.test(first)) return false;
+      return true;
+    }
+    return true;
+  }
   var TargetModelSchema = external_exports.object({
     provider: ProviderIdSchema,
     model: external_exports.string().min(1)
@@ -4061,7 +4095,9 @@
   var McpServerConfigSchema = external_exports.object({
     id: external_exports.string().min(1),
     name: external_exports.string().min(1),
-    url: external_exports.string().url(),
+    url: external_exports.string().url().refine(isSafeHttpUrl, {
+      message: "url must be http(s) and must not target a private, loopback, link-local, or metadata host"
+    }),
     transport: external_exports.enum(["http", "sse"]).default("http"),
     authHeader: external_exports.string().min(1).optional()
   });
@@ -4097,9 +4133,6 @@
     completion_tokens: external_exports.number().nonnegative(),
     total_tokens: external_exports.number().nonnegative()
   }).partial();
-  function parseSettings(input) {
-    return SettingsSchema.parse(input ?? {});
-  }
   var AnalysisFacetSchema = external_exports.enum(["language", "intent", "format", "tone"]);
   var FacetScoreSchema = external_exports.object({
     facet: AnalysisFacetSchema,
@@ -4214,7 +4247,10 @@
   var SETTINGS_KEY = "litmus:settings";
   async function loadSettings(area3) {
     const raw = await area3.get(SETTINGS_KEY);
-    return parseSettings(raw[SETTINGS_KEY]);
+    const result = SettingsSchema.safeParse(raw[SETTINGS_KEY] ?? {});
+    if (result.success) return result.data;
+    console.warn("litmus: stored settings failed validation; falling back to defaults", result.error);
+    return SettingsSchema.parse({});
   }
   async function saveSettings(area3, settings) {
     await area3.set({ [SETTINGS_KEY]: SettingsSchema.parse(settings) });
@@ -4318,8 +4354,28 @@
     }
     /** Memoized key so every op in a panel session targets the same tab namespace. */
     keyPromise = null;
+    /**
+     * Tail of the mutation queue. Every read-modify-write op chains onto this so
+     * its read sees the prior write's result — without serialization, concurrent
+     * putVersion/putRun (the run loop drives up to 8 in flight) read the same blob
+     * and the last write clobbers the others, losing saved runs/versions (P0).
+     */
+    mutationTail = Promise.resolve();
     key() {
       return this.keyPromise ??= this.resolveKey();
+    }
+    /**
+     * Run `op` after all previously-queued mutations complete. The tail is
+     * advanced to a promise that resolves regardless of `op`'s outcome, so one
+     * failing op never permanently breaks the chain for subsequent callers.
+     */
+    enqueue(op) {
+      const run = this.mutationTail.then(op, op);
+      this.mutationTail = run.then(
+        () => void 0,
+        () => void 0
+      );
+      return run;
     }
     async read() {
       try {
@@ -4339,18 +4395,22 @@
       return [...versions].sort((a, b) => a.index - b.index);
     }
     async putVersion(version) {
-      const blob = await this.read();
-      const versions = blob.versions.filter((v2) => v2.id !== version.id);
-      versions.push(version);
-      await this.write({ versions, runs: blob.runs });
+      await this.enqueue(async () => {
+        const blob = await this.read();
+        const versions = blob.versions.filter((v2) => v2.id !== version.id);
+        versions.push(version);
+        await this.write({ versions, runs: blob.runs });
+      });
     }
     async getRun(versionId) {
       const { runs } = await this.read();
       return runs[versionId] ?? null;
     }
     async putRun(record) {
-      const blob = await this.read();
-      await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
+      await this.enqueue(async () => {
+        const blob = await this.read();
+        await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
+      });
     }
   };
 
@@ -4375,14 +4435,33 @@
     if (!line.startsWith("data:")) return null;
     return line.slice(5).trim();
   }
-  async function* iterateSSE(stream) {
+  async function* iterateSSE(stream, signal) {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let cancelled = false;
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      void reader.cancel();
+    };
+    const onAbort = () => cancel();
+    if (signal) {
+      if (signal.aborted) cancel();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
     try {
       for (; ; ) {
-        const { value, done } = await reader.read();
+        if (signal?.aborted) break;
+        let result;
+        try {
+          result = await reader.read();
+        } catch {
+          break;
+        }
+        const { value, done } = result;
         if (done) break;
+        if (signal?.aborted) break;
         buffer += decoder.decode(value, { stream: true });
         let nl = buffer.indexOf("\n");
         while (nl >= 0) {
@@ -4394,9 +4473,14 @@
           nl = buffer.indexOf("\n");
         }
       }
-      const tail = extractData(buffer.replace(/\r$/, ""));
-      if (tail !== null && tail !== DONE) yield tail;
+      if (!signal?.aborted) {
+        buffer += decoder.decode();
+        const tail = extractData(buffer.replace(/\r$/, ""));
+        if (tail !== null && tail !== DONE) yield tail;
+      }
     } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      cancel();
       reader.releaseLock();
     }
   }
@@ -4410,6 +4494,21 @@
   function isChatModel(provider, model) {
     if (provider === "openai") return !OPENAI_NON_CHAT.test(model);
     return true;
+  }
+  function supportsTools(provider, model) {
+    if (provider === "openai") {
+      if (!isChatModel("openai", model)) return false;
+      if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
+      return /^(gpt-4|gpt-5|chatgpt-4|o\d)/i.test(model);
+    }
+    if (provider === "anthropic") {
+      return /claude-(3|4|opus-4|sonnet-4|haiku-4|[5-9])/i.test(model);
+    }
+    if (provider === "google") {
+      if (/gemini-1\.0/i.test(model)) return false;
+      return /gemini-(1\.5|[2-9])/i.test(model);
+    }
+    return false;
   }
 
   // src/core/stream.ts
@@ -4434,6 +4533,9 @@
     if (n < min) return min;
     if (n > max) return max;
     return n;
+  }
+  function positiveCount(n) {
+    return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
   }
   function mean(values) {
     if (values.length === 0) return 0;
@@ -4491,7 +4593,8 @@
     }
   }
   function assembleToolCalls(acc) {
-    return [...acc.values()].filter((e) => e.name).map((e) => {
+    const indexFallback = (i) => Number.isFinite(i) ? i : Number.POSITIVE_INFINITY;
+    return [...acc.entries()].sort(([a], [b]) => indexFallback(a) - indexFallback(b)).map(([, e]) => e).filter((e) => e.name).map((e) => {
       try {
         return { name: e.name, arguments: JSON.parse(e.args || "{}") };
       } catch {
@@ -4503,23 +4606,27 @@
   // src/providers/openai.ts
   var ENDPOINT = "https://api.openai.com/v1/chat/completions";
   function parseOpenAIChunk(payload) {
+    let json;
     try {
-      const json = JSON.parse(payload);
-      const out = {};
-      const delta = json.choices?.[0]?.delta;
-      if (typeof delta?.content === "string") out.delta = delta.content;
-      if (typeof json.usage?.total_tokens === "number") out.tokens = json.usage.total_tokens;
-      if (Array.isArray(delta?.tool_calls)) {
-        out.toolCalls = delta.tool_calls.map((tc, i) => ({
-          index: tc.index ?? i,
-          ...tc.function?.name !== void 0 ? { name: tc.function.name } : {},
-          ...tc.function?.arguments !== void 0 ? { argsFragment: tc.function.arguments } : {}
-        }));
-      }
-      return out;
+      json = JSON.parse(payload);
     } catch {
       return {};
     }
+    if (json.error) {
+      throw new ProviderError("openai", 0, json.error.message ?? json.error.type ?? "stream error");
+    }
+    const out = {};
+    const delta = json.choices?.[0]?.delta;
+    if (typeof delta?.content === "string") out.delta = delta.content;
+    if (typeof json.usage?.total_tokens === "number") out.tokens = json.usage.total_tokens;
+    if (Array.isArray(delta?.tool_calls)) {
+      out.toolCalls = delta.tool_calls.map((tc, i) => ({
+        index: tc.index ?? i,
+        ...tc.function?.name !== void 0 ? { name: tc.function.name } : {},
+        ...tc.function?.arguments !== void 0 ? { argsFragment: tc.function.arguments } : {}
+      }));
+    }
+    return out;
   }
   function toOpenAITools(tools) {
     return tools.map((t) => ({
@@ -4576,8 +4683,9 @@
       let tokens;
       const toolAcc = /* @__PURE__ */ new Map();
       const body = res.body;
+      const signal = options.signal;
       async function* deltas() {
-        for await (const payload of iterateSSE(body)) {
+        for await (const payload of iterateSSE(body, signal)) {
           const parts = parseOpenAIChunk(payload);
           if (parts.tokens !== void 0) tokens = parts.tokens;
           if (parts.toolCalls) accumulateToolDeltas(toolAcc, parts.toolCalls);
@@ -4597,26 +4705,43 @@
 
   // src/providers/anthropic.ts
   var ENDPOINT2 = "https://api.anthropic.com/v1/messages";
+  function inputTotal(u) {
+    const parts = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens];
+    if (parts.every((p) => typeof p !== "number")) return void 0;
+    return parts.reduce((sum, p) => sum + (typeof p === "number" ? p : 0), 0);
+  }
   function parseAnthropicChunk(payload) {
+    let json;
     try {
-      const json = JSON.parse(payload);
-      const out = {};
-      const idx = json.index ?? 0;
-      if (json.type === "content_block_start" && json.content_block?.type === "tool_use") {
-        out.toolCalls = [{ index: idx, ...json.content_block.name ? { name: json.content_block.name } : {} }];
-      }
-      if (json.type === "content_block_delta") {
-        if (typeof json.delta?.text === "string") out.delta = json.delta.text;
-        if (json.delta?.type === "input_json_delta" && typeof json.delta.partial_json === "string") {
-          out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
-        }
-      }
-      if (typeof json.message?.usage?.input_tokens === "number") out.inputTokens = json.message.usage.input_tokens;
-      if (typeof json.usage?.output_tokens === "number") out.outputTokens = json.usage.output_tokens;
-      return out;
+      json = JSON.parse(payload);
     } catch {
       return {};
     }
+    if (json.type === "error" || json.error) {
+      throw new ProviderError("anthropic", 0, json.error?.message ?? json.error?.type ?? "stream error");
+    }
+    const out = {};
+    const idx = json.index ?? 0;
+    if (json.type === "content_block_start" && json.content_block?.type === "tool_use") {
+      out.toolCalls = [{ index: idx, ...json.content_block.name ? { name: json.content_block.name } : {} }];
+    }
+    if (json.type === "content_block_delta") {
+      if (typeof json.delta?.text === "string") out.delta = json.delta.text;
+      if (json.delta?.type === "input_json_delta" && typeof json.delta.partial_json === "string") {
+        out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
+      }
+    }
+    if (json.message?.usage) {
+      const it = inputTotal(json.message.usage);
+      if (it !== void 0) out.inputTokens = it;
+      if (typeof json.message.usage.output_tokens === "number") out.outputTokens = json.message.usage.output_tokens;
+    }
+    if (json.usage) {
+      const it = inputTotal(json.usage);
+      if (it !== void 0) out.inputTokens = it;
+      if (typeof json.usage.output_tokens === "number") out.outputTokens = json.usage.output_tokens;
+    }
+    return out;
   }
   function toAnthropicTools(tools) {
     return tools.map((t) => ({
@@ -4694,8 +4819,9 @@
       let outTok;
       const toolAcc = /* @__PURE__ */ new Map();
       const body = res.body;
+      const signal = options.signal;
       async function* deltas() {
-        for await (const payload of iterateSSE(body)) {
+        for await (const payload of iterateSSE(body, signal)) {
           const p = parseAnthropicChunk(payload);
           if (p.inputTokens !== void 0) inTok = p.inputTokens;
           if (p.outputTokens !== void 0) outTok = p.outputTokens;
@@ -4718,19 +4844,23 @@
   // src/providers/google.ts
   var BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
   function parseGoogleChunk(payload) {
+    let json;
     try {
-      const json = JSON.parse(payload);
-      const out = {};
-      const parts = json.candidates?.[0]?.content?.parts ?? [];
-      const text = parts.map((p) => p.text ?? "").join("");
-      if (text.length > 0) out.delta = text;
-      const calls = parts.filter((p) => p.functionCall?.name).map((p) => ({ name: p.functionCall.name, arguments: p.functionCall.args ?? {} }));
-      if (calls.length > 0) out.toolCalls = calls;
-      if (typeof json.usageMetadata?.totalTokenCount === "number") out.tokens = json.usageMetadata.totalTokenCount;
-      return out;
+      json = JSON.parse(payload);
     } catch {
       return {};
     }
+    if (json.error) {
+      throw new ProviderError("google", json.error.code ?? 0, json.error.message ?? json.error.status ?? "stream error");
+    }
+    const out = {};
+    const parts = json.candidates?.[0]?.content?.parts ?? [];
+    const text = parts.map((p) => p.text ?? "").join("");
+    if (text.length > 0) out.delta = text;
+    const calls = parts.filter((p) => p.functionCall?.name).map((p) => ({ name: p.functionCall.name, arguments: p.functionCall.args ?? {} }));
+    if (calls.length > 0) out.toolCalls = calls;
+    if (typeof json.usageMetadata?.totalTokenCount === "number") out.tokens = json.usageMetadata.totalTokenCount;
+    return out;
   }
   function toGoogleTools(tools) {
     return [
@@ -4757,12 +4887,16 @@
     for (const m of messages) {
       if (m.role === "system") continue;
       if (m.role === "tool") {
-        contents.push({ role: "user", parts: [{ functionResponse: { name: m.toolName ?? "", response: toResponseObject(m.content) } }] });
+        if (!m.toolName) {
+          throw new Error("google: tool result is missing toolName (required to match functionResponse by name)");
+        }
+        contents.push({ role: "user", parts: [{ functionResponse: { name: m.toolName, response: toResponseObject(m.content) } }] });
       } else if (m.role === "assistant" && m.toolCalls?.length) {
         const parts = m.content ? [{ text: m.content }] : [];
         for (const c of m.toolCalls) parts.push({ functionCall: { name: c.name, args: c.arguments ?? {} } });
         contents.push({ role: "model", parts });
       } else {
+        if (m.content.length === 0) continue;
         contents.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
       }
     }
@@ -4798,8 +4932,9 @@
       let tokens;
       const toolCalls = [];
       const body = res.body;
+      const signal = options.signal;
       async function* deltas() {
-        for await (const payload of iterateSSE(body)) {
+        for await (const payload of iterateSSE(body, signal)) {
           const p = parseGoogleChunk(payload);
           if (p.tokens !== void 0) tokens = p.tokens;
           if (p.toolCalls) toolCalls.push(...p.toolCalls);
@@ -5334,7 +5469,12 @@ ${text}`).join("\n\n");
     const first = verdicts[0];
     if (!first) throw new Error("aggregateVerdicts: no verdicts");
     if (verdicts.length === 1) {
-      return first.dimensions ? { score: first.score, rationale: first.rationale, dimensions: first.dimensions } : { score: first.score, rationale: first.rationale };
+      const score2 = round1(first.score);
+      return first.dimensions ? {
+        score: score2,
+        rationale: first.rationale,
+        dimensions: first.dimensions.map((d) => ({ dimension: d.dimension, score: round1(d.score) }))
+      } : { score: score2, rationale: first.rationale };
     }
     const scores = verdicts.map((v2) => v2.score);
     const score = median(scores);
@@ -5356,7 +5496,7 @@ ${text}`).join("\n\n");
   async function mapWithConcurrency(items, limit, fn) {
     const n = items.length;
     const results = new Array(n);
-    const cap = Math.max(1, Math.floor(limit));
+    const cap = Number.isNaN(limit) ? 1 : Math.max(1, Math.floor(limit));
     let next = 0;
     async function worker() {
       for (; ; ) {
@@ -5422,7 +5562,7 @@ ${output}`
     return judgeOnce(systemPrompt, caseInput, output, deps, 0);
   }
   async function judgeOutputEnsemble(systemPrompt, caseInput, output, deps) {
-    const samples = Math.max(1, Math.floor(deps.judgeSamples ?? 1));
+    const samples = positiveCount(deps.judgeSamples ?? 1);
     if (samples === 1) return aggregateVerdicts([await judgeOutput(systemPrompt, caseInput, output, deps)]);
     const temperature = deps.judgeTemperature ?? DEFAULT_ENSEMBLE_TEMPERATURE;
     const verdicts = await mapWithConcurrency(
@@ -5434,6 +5574,7 @@ ${output}`
   }
 
   // src/services/rubricValidation.ts
+  var MIN_DISCRIMINATION_SAMPLES = 3;
   async function validateRubric(systemPrompt, cases, results, deps) {
     const target = results[0];
     if (!target) return null;
@@ -5453,10 +5594,20 @@ ${output}`
       scores.push(verdict.score);
     }
     const sorted = results.map((r) => r.score).sort((a, b) => b - a);
+    const consistencyResult = consistency(scores);
+    if (sorted.length < MIN_DISCRIMINATION_SAMPLES) {
+      const insufficient = {
+        gap: 0,
+        rating: "poor",
+        insufficientData: true,
+        note: `insufficient data: need \u2265${MIN_DISCRIMINATION_SAMPLES} cases to measure discrimination (got ${sorted.length})`
+      };
+      return { consistency: consistencyResult, discrimination: insufficient };
+    }
     const k = Math.max(1, Math.floor(sorted.length / 3));
     const top = sorted.slice(0, k);
     const bottom = sorted.slice(sorted.length - k);
-    return { consistency: consistency(scores), discrimination: discrimination(top, bottom) };
+    return { consistency: consistencyResult, discrimination: discrimination(top, bottom) };
   }
 
   // src/services/coverage.ts
@@ -5542,7 +5693,7 @@ ${output}`
         if (forbidden.has(c.name)) reasons.push(`forbidden tool "${c.name}" was called`);
       }
     }
-    const target = expectation.expectedTool ? calls.find((c) => c.name === expectation.expectedTool) : calls[0];
+    const target = expectation.expectedTool ? calls.find((c) => c.name === expectation.expectedTool) : void 0;
     if (expectation.expectedTool && !target) {
       reasons.push(`expected tool "${expectation.expectedTool}" was not called`);
     }
@@ -5623,7 +5774,7 @@ ${output}`
     const unknown = results.filter((r) => !r.known);
     const errors = results.filter((r) => "error" in r.result);
     const badArgs = results.filter((r) => !r.argsValid);
-    const stepsUsed = trajectory.steps.length;
+    const stepsUsed = trajectory.steps.filter((s2) => s2.toolCalls.length > 0).length;
     const goalScore = goal.passed ? 10 : 0;
     const toolSelection = results.length ? round1((results.length - unknown.length) / results.length * 10) : 10;
     const argumentValidity = results.length ? round1((results.length - badArgs.length) / results.length * 10) : 10;
@@ -5716,6 +5867,7 @@ ${output}`
   }
 
   // src/mcp/transport.ts
+  var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
   var McpTransportError = class extends Error {
     constructor(status2, detail) {
       super(`MCP transport HTTP ${status2}: ${detail.slice(0, 200)}`);
@@ -5728,9 +5880,11 @@ ${output}`
       this.config = config;
       this.deps = deps;
       this.fetchImpl = deps.fetchImpl ?? defaultFetch();
+      this.timeoutMs = deps.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     }
     sessionId;
     fetchImpl;
+    timeoutMs;
     headers() {
       const accept = this.config.transport === "sse" ? "text/event-stream" : "application/json, text/event-stream";
       const h = { "content-type": "application/json", accept };
@@ -5744,42 +5898,90 @@ ${output}`
       if (id) this.sessionId = id;
     }
     async request(req) {
-      const res = await this.post(JSON.stringify(req));
-      this.captureSession(res);
-      const ctype = res.headers?.get("content-type") ?? "";
-      const msg2 = ctype.includes("text/event-stream") ? await this.readFromStream(res, req.id) : await this.readFromJson(res);
-      if (!msg2) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
-      return msg2;
+      const { signal, done } = this.deadline();
+      try {
+        const res = await this.post(JSON.stringify(req), signal);
+        this.captureSession(res);
+        const ctype = res.headers?.get("content-type") ?? "";
+        const msg2 = ctype.includes("text/event-stream") ? await this.readFromStream(res, req.id, signal) : await this.readFromJson(res, req.id);
+        if (!msg2) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
+        return msg2;
+      } finally {
+        done();
+      }
     }
     async notify(n) {
-      const res = await this.post(JSON.stringify(n));
-      this.captureSession(res);
-      await res.text().catch(() => "");
+      const { signal, done } = this.deadline();
+      try {
+        const res = await this.post(JSON.stringify(n), signal);
+        this.captureSession(res);
+        await res.text().catch(() => "");
+      } finally {
+        done();
+      }
     }
-    async post(body) {
-      const res = await this.fetchImpl(this.config.url, {
-        method: "POST",
-        headers: this.headers(),
-        body,
-        ...this.deps.signal ? { signal: this.deps.signal } : {}
-      });
+    /**
+     * Build a combined abort signal that fires when the injected signal aborts OR
+     * the timeout elapses, plus a `done()` that clears the timer. Always call
+     * `done()` (in a finally) so a successful request leaves no dangling timer.
+     */
+    deadline() {
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      const injected = this.deps.signal;
+      if (injected) {
+        if (injected.aborted) controller.abort();
+        else injected.addEventListener("abort", onAbort, { once: true });
+      }
+      const timer = setTimeout(() => {
+        controller.abort(new McpTransportError(0, `request timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+      const done = () => {
+        clearTimeout(timer);
+        injected?.removeEventListener("abort", onAbort);
+      };
+      return { signal: controller.signal, done };
+    }
+    throwIfTimedOut(signal) {
+      const reason = signal.reason;
+      if (reason instanceof McpTransportError) throw reason;
+      throw new McpTransportError(0, `request aborted after ${this.timeoutMs}ms`);
+    }
+    async post(body, signal) {
+      if (signal.aborted) this.throwIfTimedOut(signal);
+      let res;
+      try {
+        res = await this.fetchImpl(this.config.url, {
+          method: "POST",
+          headers: this.headers(),
+          body,
+          // Fail loudly on redirects: following them would replay the Authorization
+          // header (a secret) to a new origin. The caller must reconfigure the URL.
+          redirect: "error",
+          signal
+        });
+      } catch (err) {
+        if (signal.aborted) this.throwIfTimedOut(signal);
+        throw err;
+      }
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
         throw new McpTransportError(res.status, detail);
       }
       return res;
     }
-    async readFromJson(res) {
+    async readFromJson(res, id) {
       const text = await res.text();
       const parsed = safeParse(text);
-      return isJsonRpcResponse(parsed) ? parsed : null;
+      return isJsonRpcResponse(parsed) && parsed.id === id ? parsed : null;
     }
-    async readFromStream(res, id) {
+    async readFromStream(res, id, signal) {
       if (!res.body) return null;
-      for await (const payload of iterateSSE(res.body)) {
+      for await (const payload of iterateSSE(res.body, signal)) {
         const parsed = safeParse(payload);
         if (isJsonRpcResponse(parsed) && parsed.id === id) return parsed;
       }
+      if (signal.aborted) this.throwIfTimedOut(signal);
       return null;
     }
   };
@@ -5890,8 +6092,9 @@ ${output}`
         })
       );
       const result = unwrap("initialize", res);
-      this.handshake = toHandshake(result, this.transport.sessionId);
+      const handshake = toHandshake(result, this.transport.sessionId);
       await this.transport.notify(makeNotification("notifications/initialized"));
+      this.handshake = handshake;
       return this.handshake;
     }
     /** The negotiated handshake; throws if `connect()` has not run. */
@@ -5920,9 +6123,27 @@ ${output}`
     const transport = createTransport(config, {
       ...deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {},
       ...deps.signal ? { signal: deps.signal } : {},
+      ...deps.timeoutMs !== void 0 ? { timeoutMs: deps.timeoutMs } : {},
       protocolVersion: CLIENT_PROTOCOL_VERSION
     });
     return new McpClient(transport);
+  }
+
+  // src/platform/hostPermission.ts
+  function originPatternFor(url) {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}/*`;
+  }
+  function defaultApi() {
+    return chrome.permissions;
+  }
+  async function ensureHostPermission(url, api = defaultApi()) {
+    const origins = [originPatternFor(url)];
+    if (await api.contains({ origins })) return true;
+    return api.request({ origins });
+  }
+  async function hasHostPermission(url, api = defaultApi()) {
+    return api.contains({ origins: [originPatternFor(url)] });
   }
 
   // src/core/results.ts
@@ -5956,13 +6177,13 @@ ${output}`
       samples: stats
     };
   }
-  function summarizeRun(results, threshold = DEFAULT_PASS_THRESHOLD) {
+  function summarizeRun(results, _threshold = DEFAULT_PASS_THRESHOLD) {
     const total = results.length;
     if (total === 0) {
       return { overall: 0, passCount: 0, failCount: 0, total: 0, speed: aggregateSpeed([]) };
     }
     const overall = round1(results.reduce((acc, r) => acc + r.score, 0) / total);
-    const passCount = results.filter((r) => scorePasses(r.score, threshold)).length;
+    const passCount = results.filter((r) => r.passed).length;
     return {
       overall,
       passCount,
@@ -5971,10 +6192,10 @@ ${output}`
       speed: aggregateSpeed(results.map((r) => r.timing))
     };
   }
-  function failingFirst(results, threshold = DEFAULT_PASS_THRESHOLD) {
+  function failingFirst(results, _threshold = DEFAULT_PASS_THRESHOLD) {
     return [...results].sort((a, b) => {
-      const aFail = scorePasses(a.score, threshold) ? 1 : 0;
-      const bFail = scorePasses(b.score, threshold) ? 1 : 0;
+      const aFail = a.passed ? 1 : 0;
+      const bFail = b.passed ? 1 : 0;
       if (aFail !== bFail) return aFail - bFail;
       return a.score - b.score;
     });
@@ -6029,6 +6250,12 @@ ${output}`
   async function wireMcp(serverId, deps) {
     const config = (deps.mcpServers ?? []).find((s2) => s2.id === serverId);
     if (!config) throw new Error(`MCP server "${serverId}" is not configured`);
+    const authorized = await hasHostPermission(config.url, deps.permissions);
+    if (!authorized) {
+      throw new Error(
+        `MCP server "${serverId}" origin is not authorized \u2014 open the MCP panel and Connect once to grant access before running.`
+      );
+    }
     const client = connectMcp(config, {
       ...deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {},
       ...deps.signal ? { signal: deps.signal } : {}
@@ -6046,6 +6273,16 @@ ${output}`
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
     const isToolCase = evalCase.toolExpectations !== void 0;
     try {
+      if ((isToolCase || evalCase.scenario) && !supportsTools(deps.target.provider, deps.target.model)) {
+        return {
+          caseId: evalCase.id,
+          output: "",
+          score: 0,
+          passed: false,
+          rationale: `Model ${deps.target.provider}/${deps.target.model} does not support tool/function calling \u2014 cannot run tool or agent cases.`,
+          timing: ZERO_TIMING
+        };
+      }
       if (evalCase.scenario) return await scenarioCaseResult(systemPrompt, evalCase, deps);
       const generated = await deps.targetProvider.chat(
         {
@@ -6097,18 +6334,19 @@ ${output}`
   }
   async function runEval(systemPrompt, cases, deps) {
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
-    const samples = Math.max(1, Math.floor(deps.samples ?? 1));
-    const concurrency = Math.max(1, Math.floor(deps.concurrency ?? 1));
-    const results = await mapWithConcurrency(
-      cases,
-      concurrency,
-      (evalCase) => runCaseSampled(systemPrompt, evalCase, deps, samples, threshold)
-    );
+    const samples = positiveCount(deps.samples ?? 1);
+    const concurrency = positiveCount(deps.concurrency ?? 1);
+    let done = 0;
+    const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
+      const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
+      deps.onProgress?.(++done, cases.length);
+      return r;
+    });
     return { results, summary: summarizeRun(results, threshold) };
   }
 
   // src/services/fixes.ts
-  function collectFailures(cases, results, threshold = 6) {
+  function collectFailures(cases, results, threshold = DEFAULT_PASS_THRESHOLD) {
     const caseById = new Map(cases.map((c) => [c.id, c]));
     return failingFirst(results, threshold).filter((r) => !r.passed).map((r) => ({
       caseId: r.caseId,
@@ -6142,7 +6380,7 @@ ${systemPrompt}`,
     return FixesSchema.parse(json).fixes;
   }
   async function suggestFixes(systemPrompt, cases, results, deps) {
-    const failures = collectFailures(cases, results, deps.passThreshold ?? 6);
+    const failures = collectFailures(cases, results, deps.passThreshold ?? DEFAULT_PASS_THRESHOLD);
     if (failures.length === 0) return [];
     return callJson(
       deps.provider,
@@ -6174,7 +6412,9 @@ ${systemPrompt}`,
     ];
   }
   function unfence(text) {
-    return text.replace(/```[a-z]*\n?/gi, "").replace(/```/g, "").trim();
+    const trimmed = text.trim();
+    const wrapped = /^```[a-z0-9-]*\n([\s\S]*?)\n?```$/i.exec(trimmed);
+    return (wrapped ? wrapped[1] : trimmed).trim();
   }
   async function applyFixes(systemPrompt, fixes, deps) {
     if (fixes.length === 0) return systemPrompt;
@@ -6198,13 +6438,17 @@ ${systemPrompt}`,
   }
   function costForCall(model, inputTokens, outputTokens) {
     const p = priceFor(model);
-    return inputTokens / 1e3 * p.in + outputTokens / 1e3 * p.out;
+    const ti = Math.max(0, inputTokens);
+    const to = Math.max(0, outputTokens);
+    return ti / 1e3 * p.in + to / 1e3 * p.out;
   }
   function roundUsd(n) {
     return Math.round(n * 1e4) / 1e4;
   }
   function estimateRun(input) {
-    const { caseCount, avgInputTokens: ti, avgOutputTokens: to } = input;
+    const caseCount = Math.max(0, input.caseCount);
+    const ti = Math.max(0, input.avgInputTokens);
+    const to = Math.max(0, input.avgOutputTokens);
     let calls = 0;
     let usd = 0;
     const add = (model, n) => {
@@ -6457,7 +6701,8 @@ ${c?.input ?? ""}
 \u2014 ${r.rationale}`.trim();
       const idTag = `<span class="cid">${esc(r.caseId)}</span>`;
       const spread = r.samples ? r.samples.min === r.samples.max ? `<span class="spread">\xD7${r.samples.count}</span>` : `<span class="spread">${r.samples.min}\u2013${r.samples.max}</span>` : "";
-      return `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">\u25B8</span>${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>` + caseDetailHtml(r, c);
+      const scoreAria = `score ${r.score.toFixed(1)}, ${r.passed ? "passed" : "failed"}`;
+      return `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">\u25B8</span>${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>` + caseDetailHtml(r, c);
     }).join("");
     return `<div class="matrix"><div class="mhead"><div>Case</div><div>Score</div><div>P/F</div></div>${rows}</div>`;
   }
@@ -6467,6 +6712,9 @@ ${c?.input ?? ""}
       const evid = f.caseRef ? `<div class="evid">\u25B8 from <b>${esc(f.caseRef)}</b></div>` : "";
       return `<div class="fix"><div class="ft"><span class="rk">${String(i + 1).padStart(2, "0")}</span><span class="fh">${esc(f.title)}</span></div><p class="fp">${esc(f.edit)}</p>${evid}</div>`;
     }).join("");
+  }
+  function axisHeaderHtml(label = "By dimension") {
+    return `<span class="term" title="${TERM_LITMUS_AXIS}">${esc(label)}</span>`;
   }
   function axisRowsHtml(rows) {
     return rows.map(
@@ -6482,8 +6730,13 @@ ${c?.input ?? ""}
     ).join("");
     return head + body;
   }
+  var TERM_RUBRIC_HEALTH = "How well your scoring rubric separates strong from weak answers.";
+  var TERM_DISCRIMINATION = "Whether the rubric gives clearly different scores to strong vs weak outputs. Higher gap = better separation.";
+  var TERM_CONSISTENCY = "How stable scores are when the same output is judged repeatedly (lower variation = more consistent).";
+  var TERM_LITMUS_AXIS = "What changed between two versions, broken down by quality dimension.";
   function rubricHealthHtml(health) {
-    return `<span class="rh-disc">Discrimination ${health.discrimination.rating} (${health.discrimination.gap.toFixed(1)})</span> \xB7 <span class="rh-cons">Consistency \u03C3${health.consistency.stdDev.toFixed(1)} (${health.consistency.rating})</span>`;
+    const verdict = `Discrimination <b>${esc(health.discrimination.rating)}</b> \xB7 Consistency <b>${esc(health.consistency.rating)}</b>`;
+    return `<div class="rh-summary"><span class="term" title="${TERM_RUBRIC_HEALTH}">Rubric health</span>: ${verdict}</div><details class="adv"><summary>Rubric health detail</summary><span class="rh-disc"><span class="term" title="${TERM_DISCRIMINATION}">Discrimination</span> ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span> \xB7 <span class="rh-cons"><span class="term" title="${TERM_CONSISTENCY}">Consistency</span> \u03C3${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span></details>`;
   }
   function versionsTimelineHtml(items) {
     if (items.length === 0) return '<p class="sub">No versions yet \u2014 run the loop to save v1.</p>';
@@ -6494,20 +6747,6 @@ ${c?.input ?? ""}
       return `<div class="ver${v2.delta === null ? " base" : ""}"><div class="vh"><span class="vt">${esc(v2.label)}</span>${cur}${model}${deltaHtml}<span class="vsc">${v2.overall.toFixed(1)} \xB7 ${esc(v2.passLabel)} \xB7 ${v2.avgSeconds}s</span></div><div class="vnote">${esc(v2.note)}</div></div>`;
     }).join("");
     return `<div class="vtl">${rows}</div>`;
-  }
-
-  // src/platform/hostPermission.ts
-  function originPatternFor(url) {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}/*`;
-  }
-  function defaultApi() {
-    return chrome.permissions;
-  }
-  async function ensureHostPermission(url, api = defaultApi()) {
-    const origins = [originPatternFor(url)];
-    if (await api.contains({ origins })) return true;
-    return api.request({ origins });
   }
 
   // src/mcp/conformance.ts
@@ -6931,7 +7170,7 @@ what language is it written in?` : `{"city":"Paris"}
   }
   function renderTabs() {
     for (const btn of Array.from(document.querySelectorAll(".mcptab"))) {
-      btn.setAttribute("aria-pressed", String(btn.dataset["cat"] === s.cat));
+      btn.setAttribute("aria-selected", String(btn.dataset["cat"] === s.cat));
     }
   }
   function renderCatalog() {
@@ -7094,13 +7333,23 @@ what language is it written in?` : `{"city":"Paris"}
       const li = e.target.closest(".mcp-tool");
       if (li?.dataset["tool"]) selectTool(li.dataset["tool"]);
     });
-    for (const btn of Array.from(document.querySelectorAll(".mcptab"))) {
+    const tabBtns = Array.from(document.querySelectorAll(".mcptab"));
+    tabBtns.forEach((btn, i) => {
       btn.addEventListener("click", () => {
         s.cat = btn.dataset["cat"] ?? "tools";
         renderTabs();
         renderCatalog();
       });
-    }
+      btn.addEventListener("keydown", (e) => {
+        const ev = e;
+        if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+        ev.preventDefault();
+        const dir = ev.key === "ArrowRight" ? 1 : -1;
+        const next = tabBtns[(i + dir + tabBtns.length) % tabBtns.length];
+        next?.click();
+        next?.focus();
+      });
+    });
     void restore();
   }
 
@@ -7129,6 +7378,7 @@ what language is it written in?` : `{"city":"Paris"}
     rubrics: {},
     activeDimension: "",
     mode: "quality",
+    outputType: "text",
     cases: [],
     tools: [],
     outcome: null,
@@ -7167,6 +7417,7 @@ what language is it written in?` : `{"city":"Paris"}
     state.cases = snap.cases;
     state.tools = snap.tools ?? [];
     if (snap.mode) setMode(snap.mode);
+    applyOutputType();
     suiteKey = snap.suiteKey;
     casesKey = snap.casesKey;
     el("prompt").value = snap.prompt;
@@ -7236,10 +7487,17 @@ what language is it written in?` : `{"city":"Paris"}
   };
   function show(step) {
     for (const s2 of VIEWS) el(`view-${s2}`).classList.toggle("hidden", s2 !== step);
-    const rail = el("rail").children;
+    const railEl = el("rail");
+    const rail = railEl.children;
     const idx = STEPS.indexOf(step);
     for (let i = 0; i < rail.length; i++) {
       rail[i].className = i < idx ? "done" : i === idx ? "now" : "";
+    }
+    if (idx >= 0) railEl.setAttribute("aria-valuenow", String(idx + 1));
+    const heading = document.querySelector(`#view-${step} .h-lead`);
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: false });
     }
   }
   function setMessage(text, kind = "info") {
@@ -7264,7 +7522,9 @@ what language is it written in?` : `{"city":"Paris"}
     const provider = currentProvider();
     const settings = await loadSettings(area2);
     const hasKey = Boolean(settings.keys[provider]);
-    el("keybox").classList.toggle("hidden", hasKey);
+    const hasAnyKey = ["openai", "anthropic", "google"].some((p) => Boolean(settings.keys[p]));
+    el("nokeyCard").classList.toggle("hidden", hasAnyKey);
+    el("keybox").classList.toggle("hidden", hasKey || !hasAnyKey);
     el("keyLabel").textContent = `Your ${provider} key (stored only in this browser)`;
     el("keyStatus").textContent = hasKey ? `${provider} key saved` : "";
   }
@@ -7355,6 +7615,7 @@ what language is it written in?` : `{"city":"Paris"}
     el("modeTools").setAttribute("aria-pressed", String(mode === "tools"));
     el("modeMcp").setAttribute("aria-pressed", "false");
     el("analyzeBtn").textContent = mode === "tools" ? "Set up tool & agent tests \u2192" : "Analyze prompt \u2192";
+    el("quickRunRow").classList.toggle("hidden", mode !== "quality");
     persistSession();
   }
   function onMcpMode() {
@@ -7366,6 +7627,52 @@ what language is it written in?` : `{"city":"Paris"}
   function onCapturePrimary() {
     if (state.mode === "tools") void onToToolTests();
     else void onAnalyze();
+  }
+  var EXAMPLE_PROMPT = "You are a support-triage assistant. Classify each ticket into Billing, Bug, How-to, or Account. Return JSON with category, urgency (1-5), and a short reason.";
+  function onLoadExample() {
+    const ta = el("prompt");
+    ta.value = EXAMPLE_PROMPT;
+    state.prompt = EXAMPLE_PROMPT;
+    persistSession();
+    setMessage("Loaded an example prompt \u2014 edit it or run it as-is.");
+    ta.focus();
+  }
+  async function onQuickRun() {
+    setMessage("");
+    state.prompt = el("prompt").value.trim();
+    if (!state.prompt) return setMessage("Paste or load a prompt first.", "error");
+    let ctx;
+    try {
+      ctx = await wiring();
+    } catch (e) {
+      el("nokeyCard").classList.remove("hidden");
+      return setMessage(e instanceof Error ? e.message : "Add an API key in Settings to start.", "info");
+    }
+    state.target = ctx.target;
+    show("run");
+    el("runStatus").textContent = "Auto-generating evaluation\u2026";
+    el("runProgress").textContent = "";
+    try {
+      const key = sessionKey(ctx);
+      if (suiteKey !== key || Object.keys(state.rubrics).length === 0) {
+        const suite = await generateEvalSuite(
+          state.prompt,
+          suiteDeps(ctx),
+          void 0,
+          (dim, i, t) => el("runStatus").textContent = `Writing rubric ${i}/${t}: ${dim}\u2026`
+        );
+        state.dimensions = suite.dimensions;
+        state.rubrics = suite.rubrics;
+        suiteKey = key;
+      }
+      el("runStatus").textContent = "Generating test cases\u2026";
+      await ensureCases(false);
+      persistSession();
+      await onRun();
+    } catch (err) {
+      setMessage(describeError(err), "error");
+      show("capture");
+    }
   }
   async function onToToolTests() {
     setMessage("");
@@ -7876,6 +8183,11 @@ ${existing}`
     await renderCasesView();
     setMessage(`Added agent scenario \u2014 ${state.cases.length} cases total.`);
   }
+  var runAbort = null;
+  function onCancelRun() {
+    runAbort?.abort();
+    el("runStatus").textContent = "Canceling\u2026";
+  }
   async function onRun() {
     setMessage("");
     if (state.cases.length === 0) {
@@ -7885,9 +8197,13 @@ ${existing}`
       );
     }
     show("run");
+    const ac = new AbortController();
+    runAbort = ac;
+    const total = state.cases.length;
+    el("runProgress").textContent = `0 / ${total} cases`;
     try {
       const { settings, target, w } = await wiring();
-      el("runStatus").textContent = `Running ${state.cases.length} cases on ${target.model}\u2026`;
+      el("runStatus").textContent = `Running ${total} cases on ${target.model}\u2026`;
       const outcome = await runEval(state.prompt, state.cases, {
         target,
         targetProvider: w.targetProvider,
@@ -7900,6 +8216,10 @@ ${existing}`
         samples: settings.samples,
         judgeSamples: settings.judgeSamples,
         concurrency: settings.concurrency,
+        signal: ac.signal,
+        onProgress: (done, t) => {
+          el("runProgress").textContent = `${done} / ${t} cases`;
+        },
         ...state.tools.length ? { tools: state.tools } : {},
         ...settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}
       });
@@ -7943,8 +8263,14 @@ ${existing}`
       renderResults(version.index);
       show("results");
     } catch (err) {
-      setMessage(describeError(err), "error");
+      if (ac.signal.aborted) {
+        setMessage("Run canceled \u2014 no version saved.");
+      } else {
+        setMessage(describeError(err), "error");
+      }
       show("cases");
+    } finally {
+      if (runAbort === ac) runAbort = null;
     }
   }
   function renderResults(versionIndex) {
@@ -8073,7 +8399,7 @@ ${existing}`
       { label: `v${a.index}`, promptText: a.text, ...a.target ? { model: a.target.model } : {} },
       { label: `v${b.index}`, promptText: b.text, ...b.target ? { model: b.target.model } : {} }
     );
-    el("axisHeader").textContent = cmp.header;
+    el("axisHeader").innerHTML = axisHeaderHtml(cmp.header);
     el("axisKeyA").textContent = `\u25C0 v${a.index}`;
     el("axisKeyB").textContent = `v${b.index} \u25B6`;
     html("axisHost", axisRowsHtml(buildAxis(aDims, bDims)));
@@ -8206,6 +8532,39 @@ ${existing}`
     el("concurrency").value = String(s2.concurrency);
     setSettingsMsg("");
     el("settingsModal").classList.remove("hidden");
+    settingsOpener = document.activeElement ?? null;
+    el("keyOpenai").focus();
+  }
+  var settingsOpener = null;
+  function closeSettings() {
+    el("settingsModal").classList.add("hidden");
+    settingsOpener?.focus?.();
+    settingsOpener = null;
+  }
+  function onSettingsKeydown(e) {
+    if (el("settingsModal").classList.contains("hidden")) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSettings();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusables = Array.from(
+      el("settingsModal").querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((n) => n.offsetParent !== null);
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
   async function onSaveSettings() {
     try {
@@ -8239,7 +8598,7 @@ ${existing}`
       targetSel.value = defaultValue(next);
       state.target = parseTarget(targetSel.value || DEFAULT_TARGET_VALUE);
       await refreshKeyState();
-      el("settingsModal").classList.add("hidden");
+      closeSettings();
       setMessage("Settings saved.");
     } catch (err) {
       setSettingsMsg(err instanceof Error ? err.message : "Could not save settings.", "error");
@@ -8282,22 +8641,34 @@ ${existing}`
     state.target = parseTarget(targetSel.value || DEFAULT_TARGET_VALUE);
     await refreshKeyState();
   }
+  var OUTPUT_TYPES = ["text", "image", "voice", "video"];
+  function isOutputType(v2) {
+    return OUTPUT_TYPES.includes(v2);
+  }
+  function applyOutputType() {
+    for (const c of Array.from(el("packs").children)) {
+      c.setAttribute("aria-pressed", String(c.getAttribute("data-pack") === state.outputType));
+    }
+  }
   function wirePacks() {
     el("packs").addEventListener("click", (e) => {
       const btn = e.target.closest(".chip");
       if (!btn || btn.disabled) return;
-      for (const c of Array.from(el("packs").children)) c.setAttribute("aria-pressed", String(c === btn));
+      const pack = btn.getAttribute("data-pack") ?? "text";
+      if (isOutputType(pack)) state.outputType = pack;
+      applyOutputType();
     });
   }
   function init() {
     wirePacks();
     el("analyzeBtn").addEventListener("click", () => onCapturePrimary());
     el("modeQuality").addEventListener("click", () => setMode("quality"));
-    el("modeTools").addEventListener("click", () => {
-      setMode("tools");
-      void onToToolTests();
-    });
+    el("modeTools").addEventListener("click", () => setMode("tools"));
     el("modeMcp").addEventListener("click", () => onMcpMode());
+    el("loadExampleBtn").addEventListener("click", () => onLoadExample());
+    el("nokeyOpenSettings").addEventListener("click", () => void openSettings());
+    el("quickRunBtn").addEventListener("click", () => void onQuickRun());
+    el("runCancelBtn").addEventListener("click", () => onCancelRun());
     el("grabBtn").addEventListener("click", () => void onGrab());
     el("buildBtn").addEventListener("click", () => openBuilder());
     el("builderBackBtn").addEventListener("click", () => show("capture"));
@@ -8322,7 +8693,8 @@ ${existing}`
     el("versionPicker").addEventListener("change", () => onPickVersion());
     el("saveKey").addEventListener("click", () => void onSaveKey());
     el("settingsBtn").addEventListener("click", () => void openSettings());
-    el("settingsClose").addEventListener("click", () => el("settingsModal").classList.add("hidden"));
+    el("settingsClose").addEventListener("click", () => closeSettings());
+    el("settingsModal").addEventListener("keydown", (e) => onSettingsKeydown(e));
     el("saveSettings").addEventListener("click", () => void onSaveSettings());
     el("deleteKeys").addEventListener("click", () => void onDeleteKeys());
     el("loadModels").addEventListener("click", () => void onLoadModels());

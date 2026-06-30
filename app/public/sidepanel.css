@@ -1,6 +1,11 @@
 :root{
   --ground:#ECEFF3;--surface:#FFFFFF;--surface-2:#F3F6F9;--surface-3:#E9EEF3;
-  --line:#DCE3EA;--line-soft:#E8EDF2;--text:#16202B;--muted:#5E6B7A;--faint:#93A0AE;
+  /* a11y: darkened for WCAG AA (4.5:1) on light surfaces (--surface #FFF .. --surface-3 #E9EEF3).
+     --muted: #5E6B7A -> #54616F (was ~5.0:1 on --surface-3, now ~5.5:1).
+     --faint: #93A0AE -> #5D6A78 (was ~2.7:1 on --surface, failing; now ~5.5:1 on --surface, >=4.7:1 on all light surfaces).
+     Note: --coral (#E5604A) as text is ~3.0-3.4:1 on these surfaces and does NOT clear 4.5:1 — left unchanged to preserve the brand,
+     which is why low/fail states also carry the non-color cues added below (.cell.lo underline+weight, .bar-lo hatch). */
+  --line:#DCE3EA;--line-soft:#E8EDF2;--text:#16202B;--muted:#54616F;--faint:#5D6A78;
   --teal:#0FA98E;--teal-bright:#17C6A6;--teal-dim:rgba(15,169,142,.12);--teal-line:rgba(15,169,142,.34);
   --coral:#E5604A;--coral-bright:#FF7257;--coral-dim:rgba(229,96,74,.11);--coral-line:rgba(229,96,74,.34);
   --amber:#C6841A;--amber-bright:#E8A33A;
@@ -62,7 +67,9 @@ textarea.field{min-height:120px}
 .btn.primary{background:var(--teal);color:#fff}
 .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
 .btn.block{width:100%}
-.btn-row{display:flex;gap:9px;margin-top:16px}
+.btn-row{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}
+/* When wrapped, a block button keeps its own full-width line. */
+.btn-row .btn.block{flex:1 1 100%}
 
 .facet{border-top:1px solid var(--line-soft);padding:11px 0}
 .facet:first-of-type{border-top:none}
@@ -74,6 +81,8 @@ textarea.field{min-height:120px}
 .facet .fnote{font-size:12px;color:var(--muted);margin:7px 0 0}
 .hi{color:var(--teal)}.mid{color:var(--amber)}.lo{color:var(--coral)}
 .bar-hi{background:var(--teal-bright)}.bar-mid{background:var(--amber-bright)}.bar-lo{background:var(--coral-bright)}
+/* a11y: diagonal hatch on low bars adds a non-color cue alongside the coral hue. */
+.facet .fbar i.bar-lo{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,transparent 2px 5px)}
 
 .suggest{background:var(--teal-dim);border:1px solid var(--teal-line);border-radius:9px;padding:11px 12px;margin-top:14px}
 .suggest .st{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--teal);margin-bottom:6px}
@@ -98,7 +107,8 @@ textarea.field{min-height:120px}
 .case .cx{flex:1;min-width:0}
 .case .ct{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
 .case .cb{font-size:12.5px;color:var(--text);margin-top:2px;word-break:break-word}
-.case .rm{flex:none;border:none;background:transparent;color:var(--faint);cursor:pointer;font-size:12px;padding:2px 4px}
+/* a11y: >=24px hit area without enlarging the glyph much. */
+.case .rm{flex:none;border:none;background:transparent;color:var(--faint);cursor:pointer;font-size:12px;min-width:24px;min-height:24px;padding:4px;display:inline-flex;align-items:center;justify-content:center}
 .case .rm:hover{color:var(--coral)}
 .case .ct .ctag{margin-left:7px;color:var(--teal);background:var(--teal-dim);border:1px solid var(--teal-line);border-radius:4px;padding:0 5px;letter-spacing:0;text-transform:none;font-weight:600}
 .costbar{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:9px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--muted)}
@@ -140,7 +150,9 @@ textarea.field{min-height:120px}
 .mrow .cse{padding:9px 10px;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mrow .cse .cid{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.04em;color:var(--faint);background:var(--surface-2);border:1px solid var(--line-soft);border-radius:4px;padding:1px 5px;margin-right:7px;text-transform:uppercase}
 .cell{display:flex;align-items:center;justify-content:center;border-left:1px solid var(--line-soft);font-family:var(--mono);font-size:12px;font-weight:600}
-.cell.ok{color:var(--teal)}.cell.lo{color:var(--coral)}
+.cell.ok{color:var(--teal)}
+/* a11y: non-color cue so red/green-colorblind users can tell low from high. */
+.cell.lo{color:var(--coral);font-weight:700;text-decoration:underline dotted;text-underline-offset:2px}
 .cell .spread{display:block;font-family:var(--mono);font-size:8.5px;font-weight:600;color:var(--faint);margin-top:1px}
 .pf.p{color:var(--teal)}.pf.f{color:var(--coral)}
 
@@ -295,7 +307,8 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 .mcp-dot.error{background:var(--coral)}
 .mcp-id{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mcp-live{font-family:var(--mono);font-size:9px;font-weight:700;color:var(--amber);background:rgba(198,132,26,.12);border:1px solid rgba(198,132,26,.34);border-radius:99px;padding:1px 6px}
-.mcp-edit{font:inherit;font-size:10.5px;color:var(--teal);background:none;border:none;cursor:pointer;text-decoration:underline}
+/* a11y: small text control gets an adequate hit area. */
+.mcp-edit{font:inherit;font-size:10.5px;color:var(--teal);background:none;border:none;cursor:pointer;text-decoration:underline;min-height:24px;padding:4px 6px;display:inline-flex;align-items:center}
 .mcptabs{display:flex;gap:4px;margin:12px 0 8px}
 .mcptab{flex:1;font:inherit;font-size:11px;padding:6px 4px;border-radius:7px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);cursor:pointer}
 .mcptab[aria-pressed="true"]{border-color:var(--teal-line);background:var(--teal-dim);color:var(--teal);font-weight:600}
@@ -313,8 +326,13 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 .mcp-result{max-height:40vh;overflow:auto}
 
 /* ---- Expandable result-case detail ---- */
-.mrow{cursor:pointer}
+.mrow{cursor:pointer;position:relative}
 .mrow:hover{background:var(--surface-2)}
+/* Expand affordance: a faint chevron hint that rotates open. Absolutely
+   positioned so it doesn't add a grid column. Sits over the right edge. */
+.mrow::after{content:"\203A";position:absolute;right:5px;top:50%;transform:translateY(-50%);color:var(--faint);font-size:11px;line-height:1;opacity:.6;transition:transform .12s ease,opacity .12s ease;pointer-events:none}
+.mrow:hover::after{opacity:1}
+.mrow.open::after{transform:translateY(-50%) rotate(90deg)}
 .mrow .caret{display:inline-block;margin-right:5px;color:var(--faint);font-size:9px;transition:transform .12s ease}
 .mrow.open .caret{transform:rotate(90deg)}
 .mdetail{padding:10px 12px;background:var(--surface-2);border-top:1px solid var(--line-soft);font-size:12px}
@@ -333,3 +351,16 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 
 /* Promote the Versions button to primary on tool/agent results (no "fix" CTA there). */
 .btn.btn-primary-promote{flex:1;background:var(--teal);color:#fff;border-color:var(--teal)}
+
+/* ---- Shared: quiet disclosure row (Advanced tuning / Advanced stats) ---- */
+.adv{border-top:1px solid var(--line-soft);margin-top:12px}
+.adv>summary{display:flex;align-items:center;gap:7px;min-height:28px;padding:6px 0;cursor:pointer;list-style:none;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+.adv>summary::-webkit-details-marker{display:none}
+.adv>summary::before{content:"\25B8";font-size:10px;color:var(--faint);line-height:1}
+.adv[open]>summary::before{content:"\25BE"}
+.adv>summary:hover{color:var(--text)}
+.adv>summary:hover::before{color:var(--muted)}
+.adv-body{padding:4px 0 8px 17px}
+
+/* ---- Shared: inline glossary term (hover for definition) ---- */
+.term{border-bottom:1px dotted var(--faint);cursor:help}
