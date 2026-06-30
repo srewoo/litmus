@@ -23,28 +23,35 @@ interface ChunkParts {
 
 /** Pull content delta, usage tokens, and tool-call fragments out of one SSE payload. */
 export function parseOpenAIChunk(payload: string): ChunkParts {
+  let json: {
+    choices?: Array<{
+      delta?: { content?: string; tool_calls?: Array<{ index?: number; function?: { name?: string; arguments?: string } }> };
+    }>;
+    usage?: { total_tokens?: number };
+    error?: { message?: string; type?: string; code?: string };
+  };
   try {
-    const json = JSON.parse(payload) as {
-      choices?: Array<{
-        delta?: { content?: string; tool_calls?: Array<{ index?: number; function?: { name?: string; arguments?: string } }> };
-      }>;
-      usage?: { total_tokens?: number };
-    };
-    const out: ChunkParts = {};
-    const delta = json.choices?.[0]?.delta;
-    if (typeof delta?.content === 'string') out.delta = delta.content;
-    if (typeof json.usage?.total_tokens === 'number') out.tokens = json.usage.total_tokens;
-    if (Array.isArray(delta?.tool_calls)) {
-      out.toolCalls = delta.tool_calls.map((tc, i) => ({
-        index: tc.index ?? i,
-        ...(tc.function?.name !== undefined ? { name: tc.function.name } : {}),
-        ...(tc.function?.arguments !== undefined ? { argsFragment: tc.function.arguments } : {}),
-      }));
-    }
-    return out;
+    json = JSON.parse(payload) as typeof json;
   } catch {
     return {}; // skip a malformed/keep-alive frame rather than failing the run
   }
+  // In-band error frame: OpenAI streams `{"error":{...}}` when the request fails
+  // mid-stream. Surface it instead of silently returning a truncated success.
+  if (json.error) {
+    throw new ProviderError('openai', 0, json.error.message ?? json.error.type ?? 'stream error');
+  }
+  const out: ChunkParts = {};
+  const delta = json.choices?.[0]?.delta;
+  if (typeof delta?.content === 'string') out.delta = delta.content;
+  if (typeof json.usage?.total_tokens === 'number') out.tokens = json.usage.total_tokens;
+  if (Array.isArray(delta?.tool_calls)) {
+    out.toolCalls = delta.tool_calls.map((tc, i) => ({
+      index: tc.index ?? i,
+      ...(tc.function?.name !== undefined ? { name: tc.function.name } : {}),
+      ...(tc.function?.arguments !== undefined ? { argsFragment: tc.function.arguments } : {}),
+    }));
+  }
+  return out;
 }
 
 /** Translate litmus tool defs into OpenAI's function-tool shape. */
@@ -114,8 +121,9 @@ export class OpenAIProvider implements Provider {
     let tokens: number | undefined;
     const toolAcc: ToolAcc = new Map();
     const body = res.body;
+    const signal = options.signal;
     async function* deltas(): AsyncIterable<string> {
-      for await (const payload of iterateSSE(body)) {
+      for await (const payload of iterateSSE(body, signal)) {
         const parts = parseOpenAIChunk(payload);
         if (parts.tokens !== undefined) tokens = parts.tokens;
         if (parts.toolCalls) accumulateToolDeltas(toolAcc, parts.toolCalls);

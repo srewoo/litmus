@@ -52,6 +52,31 @@ describe('applyFixes', () => {
     expect(await applyFixes('SYS', fixes, { provider, apiKey: 'sk', model: 'm' })).toBe('REVISED');
   });
 
+  it('should strip only a fence that wraps the whole prompt, preserving internal code blocks', async () => {
+    const revised = 'You are a helper.\nReturn JSON like:\n```json\n{"ok":true}\n```\nNever add prose.';
+    const provider: Provider = {
+      id: 'openai',
+      async chat() {
+        // The model wrapped the whole prompt in a fence, but the prompt itself contains a fenced block.
+        return { text: '```\n' + revised + '\n```', timing };
+      },
+    };
+    const out = await applyFixes('SYS', fixes, { provider, apiKey: 'sk', model: 'm' });
+    expect(out).toBe(revised);
+    expect(out).toContain('```json'); // internal fence preserved
+  });
+
+  it('should leave an unfenced prompt that contains a code block untouched', async () => {
+    const revised = 'Do X.\n```ts\nconst a = 1;\n```\nDone.';
+    const provider: Provider = {
+      id: 'openai',
+      async chat() {
+        return { text: revised, timing };
+      },
+    };
+    expect(await applyFixes('SYS', fixes, { provider, apiKey: 'sk', model: 'm' })).toBe(revised);
+  });
+
   it('should fall back to the original prompt if the model returns empty text', async () => {
     const provider: Provider = {
       id: 'openai',

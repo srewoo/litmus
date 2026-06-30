@@ -21,6 +21,27 @@ describe('collectFailures', () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({ caseId: 'c2', input: 'tricky', rationale: 'missed the edge' });
   });
+
+  it('should collect exactly the cases whose passed flag is false (authority = the flag)', () => {
+    // With a strict threshold (8) the upstream pass/fail flag is what was set on
+    // each result; collectFailures must select by that flag, not re-threshold.
+    const strict: CaseResult[] = [
+      { caseId: 'c1', output: 'o', score: 9, passed: true, rationale: 'ok at 8', timing },
+      { caseId: 'c2', output: 'o', score: 7, passed: false, rationale: 'below 8', timing },
+    ];
+    const failures = collectFailures(cases, strict, 8);
+    expect(failures.map((f) => f.caseId)).toEqual(['c2']);
+  });
+
+  it('should treat a sampled case by its flag even when its mean score looks passing', () => {
+    // Mean score 6.7 would "pass" at threshold 6, but the majority-vote flag failed it.
+    const sampled: CaseResult[] = [
+      { caseId: 'c1', output: 'o', score: 9, passed: true, rationale: 'fine', timing },
+      { caseId: 'c2', output: 'o', score: 6.7, passed: false, rationale: 'minority passed', timing },
+    ];
+    const failures = collectFailures(cases, sampled, 6);
+    expect(failures.map((f) => f.caseId)).toEqual(['c2']);
+  });
 });
 
 describe('buildFixMessages', () => {

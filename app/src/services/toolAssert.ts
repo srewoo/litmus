@@ -86,10 +86,14 @@ export function assertToolCalls(
     }
   }
 
-  // The call we evaluate args against: the expected tool, else the first call.
+  // The call we evaluate args against is ONLY the expected tool's call. With no
+  // expectedTool there is no defined call to validate — picking calls[0] would
+  // run args/schema/requiredArgs checks against an arbitrary call and produce
+  // false FAILs (e.g. forbidden-only expectations where the model correctly
+  // avoided the forbidden tool but called a different tool with imperfect args).
   const target = expectation.expectedTool
     ? calls.find((c) => c.name === expectation.expectedTool)
-    : calls[0];
+    : undefined;
 
   // 2) Expected tool must be called.
   if (expectation.expectedTool && !target) {

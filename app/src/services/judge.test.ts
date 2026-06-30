@@ -111,4 +111,26 @@ describe('judgeOutputEnsemble', () => {
     await judgeOutputEnsemble('SYS', 'IN', 'OUT', { provider, apiKey: 'sk', model: 'm', judgeSamples: 2, judgeTemperature: 0.9 });
     expect(temp).toBe(0.9);
   });
+
+  it('should collapse a non-finite judgeSamples to a single call (no RangeError / empty panel)', async () => {
+    let calls = 0;
+    const provider: Provider = {
+      id: 'google',
+      async chat() {
+        calls++;
+        return { text: '{"score":6,"rationale":"r"}', timing };
+      },
+    };
+    // Infinity would hit `Array.from({ length: Infinity })` (RangeError); NaN
+    // would skip the `=== 1` fast path and fold an empty panel (throws).
+    const inf = await judgeOutputEnsemble('SYS', 'IN', 'OUT', { provider, apiKey: 'sk', model: 'm', judgeSamples: Number.POSITIVE_INFINITY });
+    expect(calls).toBe(1);
+    expect(inf.score).toBe(6);
+    expect(inf.spread).toBeUndefined();
+
+    calls = 0;
+    const nan = await judgeOutputEnsemble('SYS', 'IN', 'OUT', { provider, apiKey: 'sk', model: 'm', judgeSamples: Number.NaN });
+    expect(calls).toBe(1);
+    expect(nan.spread).toBeUndefined();
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GoogleProvider, parseGoogleChunk } from './google';
+import { GoogleProvider, parseGoogleChunk, toContents } from './google';
 import type { FetchInit, FetchResponse } from './types';
 import { ProviderError } from './types';
 
@@ -23,6 +23,30 @@ describe('parseGoogleChunk', () => {
   });
   it('should read the total token count', () => {
     expect(parseGoogleChunk('{"candidates":[],"usageMetadata":{"totalTokenCount":9}}')).toEqual({ tokens: 9 });
+  });
+  it('should return empty parts for a malformed frame', () => {
+    expect(parseGoogleChunk('not json')).toEqual({});
+  });
+  it('should throw a ProviderError on an in-band error frame', () => {
+    expect(() => parseGoogleChunk('{"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}')).toThrow(ProviderError);
+  });
+});
+
+describe('toContents', () => {
+  it('should emit the functionResponse name from toolName', () => {
+    const { contents } = toContents([{ role: 'tool', toolName: 'get_weather', content: '{"tempC":18}' }]);
+    const part = (contents[0] as { parts: Array<{ functionResponse: { name: string } }> }).parts[0];
+    expect(part?.functionResponse.name).toBe('get_weather');
+  });
+  it('should throw when a tool result is missing its toolName', () => {
+    expect(() => toContents([{ role: 'tool', content: '{}' }])).toThrow();
+  });
+  it('should skip an empty-text user/assistant turn rather than emit parts:[{text:""}]', () => {
+    const { contents } = toContents([
+      { role: 'user', content: '' },
+      { role: 'user', content: 'hi' },
+    ]);
+    expect(contents).toEqual([{ role: 'user', parts: [{ text: 'hi' }] }]);
   });
 });
 
@@ -82,6 +106,24 @@ describe('GoogleProvider.chat', () => {
     expect(captured!.body).toContain('"functionCall"');
     expect(captured!.body).toContain('"functionResponse"');
     expect(captured!.body).toContain('"role":"model"');
+  });
+
+  it('should fail the run on a mid-stream error frame', async () => {
+    const fetchImpl = async (): Promise<FetchResponse> => ({
+      ok: true,
+      status: 200,
+      body: streamFrom([
+        'data: {"candidates":[{"content":{"parts":[{"text":"par"}]}}]}\n',
+        'data: {"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}\n',
+      ]),
+      text: async () => '',
+    });
+    await expect(
+      new GoogleProvider().chat(
+        { model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'hi' }] },
+        { apiKey: 'g', fetchImpl, clock: fakeClock([0, 10, 20]) },
+      ),
+    ).rejects.toBeInstanceOf(ProviderError);
   });
 
   it('should send functionDeclarations and collect a functionCall part', async () => {

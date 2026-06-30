@@ -43,20 +43,25 @@ export function foldSamples(runs: readonly CaseResult[], threshold: number = DEF
 }
 
 /**
- * Summarize a run. `overall` is the mean case score; pass/fail is computed from
- * the threshold (not from each result's `passed` flag) so a single threshold is
- * authoritative across the whole run.
+ * Summarize a run. `overall` is the mean case score; pass/fail is taken from the
+ * per-case `passed` flag, which is the SINGLE source of truth (set by
+ * `runOneCase`/`foldSamples` against the run threshold). This keeps the headline
+ * counts consistent with the per-case verdicts, including sampled cases where a
+ * majority-of-samples vote can disagree with re-thresholding the mean score.
+ *
+ * The `threshold` parameter is retained for backward compatibility but no longer
+ * affects pass/fail — the per-case flag already encodes it.
  */
 export function summarizeRun(
   results: readonly CaseResult[],
-  threshold: number = DEFAULT_PASS_THRESHOLD,
+  _threshold: number = DEFAULT_PASS_THRESHOLD,
 ): RunSummary {
   const total = results.length;
   if (total === 0) {
     return { overall: 0, passCount: 0, failCount: 0, total: 0, speed: aggregateSpeed([]) };
   }
   const overall = round1(results.reduce((acc, r) => acc + r.score, 0) / total);
-  const passCount = results.filter((r) => scorePasses(r.score, threshold)).length;
+  const passCount = results.filter((r) => r.passed).length;
   return {
     overall,
     passCount,
@@ -66,14 +71,19 @@ export function summarizeRun(
   };
 }
 
-/** Failing cases first, then by ascending score — the order the fix list consumes. */
+/**
+ * Failing cases first, then by ascending score — the order the fix list consumes.
+ * Ordering uses the per-case `passed` flag (the single source of truth), so it
+ * agrees with `summarizeRun`. The `threshold` parameter is retained for backward
+ * compatibility but no longer affects ordering.
+ */
 export function failingFirst(
   results: readonly CaseResult[],
-  threshold: number = DEFAULT_PASS_THRESHOLD,
+  _threshold: number = DEFAULT_PASS_THRESHOLD,
 ): CaseResult[] {
   return [...results].sort((a, b) => {
-    const aFail = scorePasses(a.score, threshold) ? 1 : 0;
-    const bFail = scorePasses(b.score, threshold) ? 1 : 0;
+    const aFail = a.passed ? 1 : 0;
+    const bFail = b.passed ? 1 : 0;
     if (aFail !== bFail) return aFail - bFail;
     return a.score - b.score;
   });

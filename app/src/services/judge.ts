@@ -12,6 +12,7 @@ import { chatOptions } from './opts';
 import { aggregateVerdicts } from '../core/judgeAggregate';
 import type { AggregatedVerdict } from '../core/judgeAggregate';
 import { mapWithConcurrency } from '../shared/concurrency';
+import { positiveCount } from '../shared/num';
 import type { z } from 'zod';
 
 export type Verdict = z.infer<typeof VerdictSchema>;
@@ -126,7 +127,10 @@ export async function judgeOutputEnsemble(
   output: string,
   deps: JudgeDeps,
 ): Promise<AggregatedVerdict> {
-  const samples = Math.max(1, Math.floor(deps.judgeSamples ?? 1));
+  // `positiveCount` collapses a non-finite sample count to 1, so the ensemble
+  // path never hits `Array.from({ length: NaN/Infinity })` (a RangeError / empty
+  // panel that would throw in aggregateVerdicts).
+  const samples = positiveCount(deps.judgeSamples ?? 1);
   if (samples === 1) return aggregateVerdicts([await judgeOutput(systemPrompt, caseInput, output, deps)]);
 
   const temperature = deps.judgeTemperature ?? DEFAULT_ENSEMBLE_TEMPERATURE;

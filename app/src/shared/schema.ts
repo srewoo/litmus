@@ -7,6 +7,56 @@ import { z } from 'zod';
 
 export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'google']);
 
+/**
+ * SSRF guard for user-configured MCP endpoints. Only http/https schemes are
+ * allowed (http kept for now because the panel still uses optional host
+ * permissions — https is strongly preferred), and the host must not resolve to
+ * a private, loopback, link-local, or cloud-metadata address. This is a
+ * best-effort string-level check (literal IPs and well-known names); DNS
+ * rebinding is out of scope for a client-side validator.
+ */
+export function isSafeHttpUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+
+  // Hostname is lower-cased by URL; strip IPv6 brackets if present.
+  const rawHost = parsed.hostname.toLowerCase();
+  const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+  if (host === '') return false;
+  if (host === 'localhost' || host.endsWith('.localhost')) return false;
+
+  // IPv4 literal (e.g. 169.254.169.254, 10.x, 127.x, 192.168.x, 172.16-31.x).
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1).map((o) => Number(o));
+    if (octets.some((o) => o > 255)) return false;
+    const [a, b] = octets as [number, number, number, number];
+    if (a === 0) return false; // 0.0.0.0/8 incl. 0.0.0.0
+    if (a === 10) return false; // 10.0.0.0/8
+    if (a === 127) return false; // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return false; // 169.254.0.0/16 link-local + metadata
+    if (a === 172 && b >= 16 && b <= 31) return false; // 172.16.0.0/12
+    if (a === 192 && b === 168) return false; // 192.168.0.0/16
+    return true;
+  }
+
+  // IPv6 literal: loopback (::1), unspecified (::), ULA fc00::/7, link-local fe80::/10.
+  if (host.includes(':')) {
+    if (host === '::1' || host === '::') return false;
+    const first = host.split(':')[0] ?? '';
+    if (/^f[cd]/.test(first)) return false; // fc00::/7 (fc, fd)
+    if (/^fe[89ab]/.test(first)) return false; // fe80::/10
+    return true;
+  }
+
+  return true;
+}
+
 export const TargetModelSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
@@ -24,7 +74,12 @@ export const KeysSchema = z
 export const McpServerConfigSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  url: z.string().url(),
+  url: z
+    .string()
+    .url()
+    .refine(isSafeHttpUrl, {
+      message: 'url must be http(s) and must not target a private, loopback, link-local, or metadata host',
+    }),
   transport: z.enum(['http', 'sse']).default('http'),
   authHeader: z.string().min(1).optional(),
 });

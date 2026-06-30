@@ -9,7 +9,7 @@
  * Note: the legacy dual-endpoint SSE transport (separate GET stream + POST) is out
  * of scope for v1 (ADR 0003); `transport: 'sse'` here only sets the Accept header.
  */
-import type { FetchLike, FetchResponse } from '../providers/types';
+import type { FetchInit, FetchLike, FetchResponse } from '../providers/types';
 import { defaultFetch } from '../providers/types';
 import { iterateSSE } from '../providers/sse';
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse } from './jsonrpc';
@@ -23,11 +23,16 @@ export interface McpTransport {
   readonly sessionId: string | undefined;
 }
 
+/** Default per-request timeout; a held-open SSE stream rejects instead of hanging forever. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface TransportDeps {
   readonly fetchImpl?: FetchLike;
   readonly signal?: AbortSignal;
   /** Protocol version to advertise on the `MCP-Protocol-Version` header after init. */
   readonly protocolVersion?: string;
+  /** Per-request timeout in ms; defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
 }
 
 /** Raised when the transport itself fails (HTTP non-OK, no parsable response). */
@@ -45,11 +50,14 @@ class HttpTransport implements McpTransport {
   sessionId: string | undefined;
   private readonly fetchImpl: FetchLike;
 
+  private readonly timeoutMs: number;
+
   constructor(
     private readonly config: McpServerConfig,
     private readonly deps: TransportDeps,
   ) {
     this.fetchImpl = deps.fetchImpl ?? defaultFetch();
+    this.timeoutMs = deps.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   private headers(): Record<string, string> {
@@ -67,30 +75,82 @@ class HttpTransport implements McpTransport {
   }
 
   async request(req: JsonRpcRequest): Promise<JsonRpcResponse> {
-    const res = await this.post(JSON.stringify(req));
-    this.captureSession(res);
-    const ctype = res.headers?.get('content-type') ?? '';
-    const msg = ctype.includes('text/event-stream')
-      ? await this.readFromStream(res, req.id)
-      : await this.readFromJson(res);
-    if (!msg) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
-    return msg;
+    // One timeout governs the whole request — the POST AND the (possibly held-open)
+    // SSE read — combined with any injected signal, so a slow/hung server rejects
+    // loudly instead of hanging forever.
+    const { signal, done } = this.deadline();
+    try {
+      const res = await this.post(JSON.stringify(req), signal);
+      this.captureSession(res);
+      const ctype = res.headers?.get('content-type') ?? '';
+      const msg = ctype.includes('text/event-stream')
+        ? await this.readFromStream(res, req.id, signal)
+        : await this.readFromJson(res, req.id);
+      if (!msg) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
+      return msg;
+    } finally {
+      done();
+    }
   }
 
   async notify(n: JsonRpcNotification): Promise<void> {
-    const res = await this.post(JSON.stringify(n));
-    this.captureSession(res);
-    // Notifications get 202/204 and no body; drain any text to release the socket.
-    await res.text().catch(() => '');
+    const { signal, done } = this.deadline();
+    try {
+      const res = await this.post(JSON.stringify(n), signal);
+      this.captureSession(res);
+      // Notifications get 202/204 and no body; drain any text to release the socket.
+      await res.text().catch(() => '');
+    } finally {
+      done();
+    }
   }
 
-  private async post(body: string): Promise<FetchResponse> {
-    const res = await this.fetchImpl(this.config.url, {
-      method: 'POST',
-      headers: this.headers(),
-      body,
-      ...(this.deps.signal ? { signal: this.deps.signal } : {}),
-    });
+  /**
+   * Build a combined abort signal that fires when the injected signal aborts OR
+   * the timeout elapses, plus a `done()` that clears the timer. Always call
+   * `done()` (in a finally) so a successful request leaves no dangling timer.
+   */
+  private deadline(): { signal: AbortSignal; done: () => void } {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    const injected = this.deps.signal;
+    if (injected) {
+      if (injected.aborted) controller.abort();
+      else injected.addEventListener('abort', onAbort, { once: true });
+    }
+    const timer = setTimeout(() => {
+      controller.abort(new McpTransportError(0, `request timed out after ${this.timeoutMs}ms`));
+    }, this.timeoutMs);
+    const done = (): void => {
+      clearTimeout(timer);
+      injected?.removeEventListener('abort', onAbort);
+    };
+    return { signal: controller.signal, done };
+  }
+
+  private throwIfTimedOut(signal: AbortSignal): never {
+    const reason = signal.reason;
+    if (reason instanceof McpTransportError) throw reason;
+    throw new McpTransportError(0, `request aborted after ${this.timeoutMs}ms`);
+  }
+
+  private async post(body: string, signal: AbortSignal): Promise<FetchResponse> {
+    if (signal.aborted) this.throwIfTimedOut(signal);
+    let res: FetchResponse;
+    try {
+      res = await this.fetchImpl(this.config.url, {
+        method: 'POST',
+        headers: this.headers(),
+        body,
+        // Fail loudly on redirects: following them would replay the Authorization
+        // header (a secret) to a new origin. The caller must reconfigure the URL.
+        redirect: 'error',
+        signal,
+      } as FetchInit);
+    } catch (err) {
+      if (signal.aborted) this.throwIfTimedOut(signal);
+      throw err;
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new McpTransportError(res.status, detail);
@@ -98,18 +158,22 @@ class HttpTransport implements McpTransport {
     return res;
   }
 
-  private async readFromJson(res: FetchResponse): Promise<JsonRpcResponse | null> {
+  private async readFromJson(res: FetchResponse, id: number): Promise<JsonRpcResponse | null> {
     const text = await res.text();
     const parsed = safeParse(text);
-    return isJsonRpcResponse(parsed) ? parsed : null;
+    // Match the id like the SSE path does — a body for a different id is not our response.
+    return isJsonRpcResponse(parsed) && parsed.id === id ? parsed : null;
   }
 
-  private async readFromStream(res: FetchResponse, id: number): Promise<JsonRpcResponse | null> {
+  private async readFromStream(res: FetchResponse, id: number, signal: AbortSignal): Promise<JsonRpcResponse | null> {
     if (!res.body) return null;
-    for await (const payload of iterateSSE(res.body)) {
+    // Pass the deadline signal so iterateSSE cancels the underlying reader on
+    // timeout/abort — a held-open stream then terminates instead of hanging.
+    for await (const payload of iterateSSE(res.body, signal)) {
       const parsed = safeParse(payload);
       if (isJsonRpcResponse(parsed) && parsed.id === id) return parsed;
     }
+    if (signal.aborted) this.throwIfTimedOut(signal);
     return null;
   }
 }

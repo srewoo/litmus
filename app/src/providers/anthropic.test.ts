@@ -49,6 +49,21 @@ describe('parseAnthropicChunk', () => {
     expect(parseAnthropicChunk('{"type":"message_start","message":{"usage":{"input_tokens":5}}}')).toEqual({ inputTokens: 5 });
     expect(parseAnthropicChunk('{"type":"message_delta","usage":{"output_tokens":2}}')).toEqual({ outputTokens: 2 });
   });
+  it('should read an initial output_tokens from message_start (abort fallback)', () => {
+    expect(
+      parseAnthropicChunk('{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1}}}'),
+    ).toEqual({ inputTokens: 5, outputTokens: 1 });
+  });
+  it('should include cache creation/read tokens in the input total', () => {
+    expect(
+      parseAnthropicChunk(
+        '{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":10,"cache_read_input_tokens":3}}}',
+      ),
+    ).toEqual({ inputTokens: 18 });
+  });
+  it('should throw a ProviderError on an in-band error frame', () => {
+    expect(() => parseAnthropicChunk('{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}')).toThrow(ProviderError);
+  });
 });
 
 describe('AnthropicProvider.chat', () => {
@@ -86,6 +101,43 @@ describe('AnthropicProvider.chat', () => {
     await expect(
       new AnthropicProvider().chat({ model: 'claude-sonnet-4.6', messages: [{ role: 'user', content: 'x' }] }, { apiKey: 'k', fetchImpl }),
     ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('should fail the run on a mid-stream error frame', async () => {
+    const fetchImpl = async (): Promise<FetchResponse> => ({
+      ok: true,
+      status: 200,
+      body: streamFrom([
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}\n',
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n',
+      ]),
+      text: async () => '',
+    });
+    await expect(
+      new AnthropicProvider().chat(
+        { model: 'claude-sonnet-4.6', messages: [{ role: 'user', content: 'hi' }] },
+        { apiKey: 'k', fetchImpl, clock: fakeClock([0, 10, 20]) },
+      ),
+    ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('should still count output tokens from message_start when message_delta is missing', async () => {
+    const fetchImpl = async (): Promise<FetchResponse> => ({
+      ok: true,
+      status: 200,
+      // No message_delta (e.g. aborted): output count comes from message_start's initial usage.
+      body: streamFrom([
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":4}}}\n',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}\n',
+      ]),
+      text: async () => '',
+    });
+    const res = await new AnthropicProvider().chat(
+      { model: 'claude-sonnet-4.6', messages: [{ role: 'user', content: 'hi' }] },
+      { apiKey: 'k', fetchImpl, clock: fakeClock([0, 10, 20]) },
+    );
+    // input total = 5 + 4 (cache_read) = 9, output = 1 → 10
+    expect(res.tokens).toBe(10);
   });
 
   it('should send tools (input_schema) and assemble a streamed tool_use block', async () => {

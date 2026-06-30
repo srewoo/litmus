@@ -40,9 +40,15 @@ export function buildApplyMessages(systemPrompt: string, fixes: readonly Fix[]):
   ];
 }
 
-/** Strip accidental code fences a model may wrap the prompt in. */
+/**
+ * Strip a code fence ONLY when it wraps the entire prompt (a leading ```lang
+ * line and a trailing ``` line). Internal fenced code blocks — which can be a
+ * legitimate part of a revised prompt — are left intact.
+ */
 function unfence(text: string): string {
-  return text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
+  const trimmed = text.trim();
+  const wrapped = /^```[a-z0-9-]*\n([\s\S]*?)\n?```$/i.exec(trimmed);
+  return (wrapped ? wrapped[1]! : trimmed).trim();
 }
 
 /** Rewrite the prompt with the fixes applied. No-op (returns input) when fixes is empty. */

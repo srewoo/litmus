@@ -56,6 +56,27 @@ describe('McpClient.connect', () => {
     const client = new McpClient(new FakeTransport({}));
     expect(() => client.capabilities).toThrow();
   });
+
+  it('does not cache the handshake when notifications/initialized fails', async () => {
+    // A transport whose notify rejects: the handshake must NOT be cached, so a
+    // later connect() retries rather than returning an uninitialized success.
+    let notifyCalls = 0;
+    class FailingNotifyTransport extends FakeTransport {
+      override notify(n: JsonRpcNotification): Promise<void> {
+        notifyCalls += 1;
+        if (notifyCalls === 1) return Promise.reject(new Error('notify boom'));
+        return super.notify(n);
+      }
+    }
+    const t = new FailingNotifyTransport({ initialize: HANDSHAKE });
+    const client = new McpClient(t);
+    await expect(client.connect()).rejects.toThrow(/notify boom/);
+    expect(() => client.capabilities).toThrow(); // not cached
+    // A retry now succeeds and re-runs the handshake.
+    const hs = await client.connect();
+    expect(hs.capabilities).toEqual({ tools: true, resources: true, prompts: false });
+    expect(t.requests.filter((r) => r.method === 'initialize')).toHaveLength(2);
+  });
 });
 
 describe('McpClient list/call methods', () => {

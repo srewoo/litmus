@@ -29,5 +29,29 @@ describe('validateRubric', () => {
     expect(health).not.toBeNull();
     expect(health!.consistency.rating).toBe('good'); // [8,8,8] → σ0
     expect(health!.discrimination.gap).toBeGreaterThan(0); // top vs bottom of [9,8,3]
+    expect((health!.discrimination as { insufficientData?: boolean }).insufficientData).toBeUndefined();
+  });
+
+  it('should mark discrimination as insufficient for a single-case run', async () => {
+    const health = await validateRubric('SYS', cases, [result('c1', 8)], {
+      provider, apiKey: 'sk', model: 'm', repeats: 1,
+    });
+    expect(health).not.toBeNull();
+    const disc = health!.discrimination as { gap: number; rating: string; insufficientData?: boolean; note?: string };
+    expect(disc.insufficientData).toBe(true);
+    expect(disc.gap).toBe(0);
+    expect(disc.note).toMatch(/insufficient data/i);
+    // Consistency is still computed normally.
+    expect(health!.consistency.rating).toBe('good');
+  });
+
+  it('should mark discrimination as insufficient for a two-case run (thirds overlap)', async () => {
+    const health = await validateRubric('SYS', cases, [result('c1', 8), result('a', 2)], {
+      provider, apiKey: 'sk', model: 'm', repeats: 1,
+    });
+    expect(health).not.toBeNull();
+    const disc = health!.discrimination as { gap: number; insufficientData?: boolean };
+    expect(disc.insufficientData).toBe(true);
+    expect(disc.gap).toBe(0);
   });
 });

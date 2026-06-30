@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { FetchInit, FetchResponse } from '../providers/types';
-import { createTransport, McpTransportError } from './transport';
+import { createTransport, McpTransportError, DEFAULT_REQUEST_TIMEOUT_MS } from './transport';
 import { makeNotification, makeRequest } from './jsonrpc';
 import type { McpServerConfig } from './types';
 
@@ -71,7 +71,8 @@ describe('HttpTransport.request', () => {
     const seen: string[] = [];
     const fetchImpl = async (_url: string, init: FetchInit) => {
       seen.push(init.headers['mcp-session-id'] ?? '');
-      return jsonResponse({ jsonrpc: '2.0', id: 1, result: {} }, { 'mcp-session-id': 'abc' });
+      const id = (JSON.parse(init.body ?? '{}') as { id: number }).id;
+      return jsonResponse({ jsonrpc: '2.0', id, result: {} }, { 'mcp-session-id': 'abc' });
     };
     const t = createTransport(SERVER, { fetchImpl });
     await t.request(makeRequest(1, 'initialize'));
@@ -101,6 +102,61 @@ describe('HttpTransport.request', () => {
     });
     const t = createTransport(SERVER, { fetchImpl });
     await expect(t.request(makeRequest(1, 'ping'))).rejects.toBeInstanceOf(McpTransportError);
+  });
+
+  it('sets redirect:error so a redirecting endpoint does not replay the auth header', async () => {
+    let init: FetchInit | null = null;
+    const fetchImpl = async (_url: string, i: FetchInit) => {
+      init = i;
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: {} });
+    };
+    const t = createTransport({ ...SERVER, authHeader: 'Bearer secret' }, { fetchImpl });
+    await t.request(makeRequest(1, 'ping'));
+    expect((init as unknown as { redirect?: string })!.redirect).toBe('error');
+  });
+
+  it('treats a JSON body with a mismatched id as no response', async () => {
+    const fetchImpl = async () => jsonResponse({ jsonrpc: '2.0', id: 999, result: { ok: true } });
+    const t = createTransport(SERVER, { fetchImpl });
+    await expect(t.request(makeRequest(1, 'ping'))).rejects.toBeInstanceOf(McpTransportError);
+  });
+
+  it('rejects with a timeout error when the SSE stream never yields a matching id', async () => {
+    // A body that never closes: simulates a held-open SSE stream.
+    const hung: FetchResponse = {
+      ok: true,
+      status: 200,
+      body: new ReadableStream<Uint8Array>({ start() { /* never enqueues, never closes */ } }),
+      headers: { get: (n) => (n.toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
+      text: () => new Promise<string>(() => {}),
+    };
+    const fetchImpl = async () => hung;
+    const t = createTransport(SERVER, { fetchImpl, timeoutMs: 20 });
+    await expect(t.request(makeRequest(1, 'tools/list'))).rejects.toBeInstanceOf(McpTransportError);
+  });
+
+  it('rejects with a timeout when the POST itself hangs', async () => {
+    const fetchImpl = (_url: string, init: FetchInit) =>
+      new Promise<FetchResponse>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    const t = createTransport(SERVER, { fetchImpl, timeoutMs: 20 });
+    const err = await t.request(makeRequest(1, 'ping')).catch((e) => e);
+    expect(err).toBeInstanceOf(McpTransportError);
+    expect(String(err.message)).toContain('timed out');
+  });
+
+  it('aborts when an injected signal is already aborted', async () => {
+    const fetchImpl = (_url: string, init: FetchInit) =>
+      new Promise<FetchResponse>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    const t = createTransport(SERVER, { fetchImpl, signal: AbortSignal.abort(), timeoutMs: 50 });
+    await expect(t.request(makeRequest(1, 'ping'))).rejects.toBeInstanceOf(McpTransportError);
+  });
+
+  it('exposes a sane default request timeout', () => {
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBeGreaterThan(0);
   });
 
   it('forces an SSE-only Accept header for the sse transport kind', async () => {

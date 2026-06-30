@@ -27,6 +27,15 @@ describe('aggregateVerdicts', () => {
     expect(aggregateVerdicts([{ score: 5, rationale: 'r' }]).dimensions).toBeUndefined();
   });
 
+  it('rounds a single verdict score and dimensions to 1dp to match the median contract', () => {
+    const out = aggregateVerdicts([
+      { score: 7.26, rationale: 'r', dimensions: [{ dimension: 'tone', score: 6.04 }] },
+    ]);
+    expect(out.score).toBe(7.3);
+    expect(out.dimensions).toEqual([{ dimension: 'tone', score: 6 }]);
+    expect(out.spread).toBeUndefined();
+  });
+
   it('takes the median score so a single outlier judge cannot swing the result', () => {
     const out = aggregateVerdicts([
       { score: 8, rationale: 'good' },

@@ -38,4 +38,37 @@ describe('mapWithConcurrency', () => {
     const out = await mapWithConcurrency(['a', 'b', 'c'], 2, async (v, i) => `${i}:${v}`);
     expect(out).toEqual(['0:a', '1:b', '2:c']);
   });
+
+  it('treats a NaN limit as sequential instead of silently returning holes', async () => {
+    const out = await mapWithConcurrency([1, 2, 3], Number.NaN, async (n) => n * 2);
+    expect(out).toEqual([2, 4, 6]); // every item ran; no `undefined` holes
+  });
+
+  it('floors a fractional or sub-1 limit up to a single worker', async () => {
+    expect(await mapWithConcurrency([1, 2, 3], 0, async (n) => n)).toEqual([1, 2, 3]);
+    expect(await mapWithConcurrency([1, 2, 3], -4, async (n) => n)).toEqual([1, 2, 3]);
+    expect(await mapWithConcurrency([1, 2, 3], 1.9, async (n) => n)).toEqual([1, 2, 3]);
+  });
+
+  it('treats an Infinity limit as unbounded (runs every item at once)', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const items = Array.from({ length: 6 }, (_, i) => i);
+    await mapWithConcurrency(items, Number.POSITIVE_INFINITY, async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+    });
+    expect(peak).toBe(items.length); // all in flight together
+  });
+
+  it('rejects the whole map when fn rejects (documented contract)', async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error('boom');
+        return n;
+      }),
+    ).rejects.toThrow('boom');
+  });
 });

@@ -17,35 +17,66 @@ interface ChunkParts {
   toolCalls?: ToolCallDelta[];
 }
 
+interface AnthropicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/** Sum the input-side tokens, including cache creation/read tokens when present. */
+function inputTotal(u: AnthropicUsage): number | undefined {
+  const parts = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens];
+  if (parts.every((p) => typeof p !== 'number')) return undefined;
+  return parts.reduce<number>((sum, p) => sum + (typeof p === 'number' ? p : 0), 0);
+}
+
 export function parseAnthropicChunk(payload: string): ChunkParts {
+  let json: {
+    type?: string;
+    index?: number;
+    content_block?: { type?: string; name?: string };
+    delta?: { text?: string; type?: string; partial_json?: string };
+    message?: { usage?: AnthropicUsage };
+    usage?: AnthropicUsage;
+    error?: { type?: string; message?: string };
+  };
   try {
-    const json = JSON.parse(payload) as {
-      type?: string;
-      index?: number;
-      content_block?: { type?: string; name?: string };
-      delta?: { text?: string; type?: string; partial_json?: string };
-      message?: { usage?: { input_tokens?: number } };
-      usage?: { output_tokens?: number };
-    };
-    const out: ChunkParts = {};
-    const idx = json.index ?? 0;
-    // A tool_use block opens → record its name at this index.
-    if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
-      out.toolCalls = [{ index: idx, ...(json.content_block.name ? { name: json.content_block.name } : {}) }];
-    }
-    if (json.type === 'content_block_delta') {
-      if (typeof json.delta?.text === 'string') out.delta = json.delta.text;
-      // Tool arguments stream as input_json_delta fragments.
-      if (json.delta?.type === 'input_json_delta' && typeof json.delta.partial_json === 'string') {
-        out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
-      }
-    }
-    if (typeof json.message?.usage?.input_tokens === 'number') out.inputTokens = json.message.usage.input_tokens;
-    if (typeof json.usage?.output_tokens === 'number') out.outputTokens = json.usage.output_tokens;
-    return out;
+    json = JSON.parse(payload) as typeof json;
   } catch {
     return {};
   }
+  // In-band error frame: Anthropic streams `{"type":"error","error":{...}}` on a
+  // mid-stream failure (e.g. overloaded). Surface it instead of dropping it.
+  if (json.type === 'error' || json.error) {
+    throw new ProviderError('anthropic', 0, json.error?.message ?? json.error?.type ?? 'stream error');
+  }
+  const out: ChunkParts = {};
+  const idx = json.index ?? 0;
+  // A tool_use block opens → record its name at this index.
+  if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+    out.toolCalls = [{ index: idx, ...(json.content_block.name ? { name: json.content_block.name } : {}) }];
+  }
+  if (json.type === 'content_block_delta') {
+    if (typeof json.delta?.text === 'string') out.delta = json.delta.text;
+    // Tool arguments stream as input_json_delta fragments.
+    if (json.delta?.type === 'input_json_delta' && typeof json.delta.partial_json === 'string') {
+      out.toolCalls = [{ index: idx, argsFragment: json.delta.partial_json }];
+    }
+  }
+  // message_start carries the initial usage (input tokens + an initial output_tokens);
+  // message_delta carries the final output_tokens. Both may include cache tokens.
+  if (json.message?.usage) {
+    const it = inputTotal(json.message.usage);
+    if (it !== undefined) out.inputTokens = it;
+    if (typeof json.message.usage.output_tokens === 'number') out.outputTokens = json.message.usage.output_tokens;
+  }
+  if (json.usage) {
+    const it = inputTotal(json.usage);
+    if (it !== undefined) out.inputTokens = it;
+    if (typeof json.usage.output_tokens === 'number') out.outputTokens = json.usage.output_tokens;
+  }
+  return out;
 }
 
 /** Translate litmus tool defs into Anthropic's tool shape (uses `input_schema`). */
@@ -135,11 +166,15 @@ export class AnthropicProvider implements Provider {
     }
 
     let inTok: number | undefined;
+    // Output tokens: message_start carries an initial count, message_delta the final.
+    // We keep the latest seen, so an aborted stream missing message_delta still falls
+    // back to message_start's initial output_tokens rather than leaving it undefined.
     let outTok: number | undefined;
     const toolAcc: ToolAcc = new Map();
     const body = res.body;
+    const signal = options.signal;
     async function* deltas(): AsyncIterable<string> {
-      for await (const payload of iterateSSE(body)) {
+      for await (const payload of iterateSSE(body, signal)) {
         const p = parseAnthropicChunk(payload);
         if (p.inputTokens !== undefined) inTok = p.inputTokens;
         if (p.outputTokens !== undefined) outTok = p.outputTokens;
@@ -149,6 +184,9 @@ export class AnthropicProvider implements Provider {
     }
 
     const measurement = await timeChunkStream(deltas(), startMs, clock);
+    // Report a total only if we saw any usage; default each side to 0 so a missing
+    // output count (aborted before message_delta) still includes the input total
+    // rather than reporting input-only as a silent full total.
     const tokens = inTok !== undefined || outTok !== undefined ? (inTok ?? 0) + (outTok ?? 0) : undefined;
     const toolCalls = assembleToolCalls(toolAcc);
     const response: ChatResponse = {

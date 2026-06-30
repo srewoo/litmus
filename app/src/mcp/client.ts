@@ -50,8 +50,12 @@ export class McpClient {
       }),
     );
     const result = unwrap('initialize', res);
-    this.handshake = toHandshake(result, this.transport.sessionId);
+    const handshake = toHandshake(result, this.transport.sessionId);
+    // Only cache the handshake AFTER notify succeeds: a notify failure must not
+    // leave a cached-but-uninitialized handshake that a later idempotent
+    // connect() would return as success.
     await this.transport.notify(makeNotification('notifications/initialized'));
+    this.handshake = handshake;
     return this.handshake;
   }
 
@@ -86,11 +90,12 @@ export class McpClient {
 /** Build a client over a real Streamable-HTTP transport for a configured server. */
 export function connectMcp(
   config: McpServerConfig,
-  deps: { fetchImpl?: import('../providers/types').FetchLike; signal?: AbortSignal } = {},
+  deps: { fetchImpl?: import('../providers/types').FetchLike; signal?: AbortSignal; timeoutMs?: number } = {},
 ): McpClient {
   const transport = createTransport(config, {
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.signal ? { signal: deps.signal } : {}),
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
     protocolVersion: CLIENT_PROTOCOL_VERSION,
   });
   return new McpClient(transport);
