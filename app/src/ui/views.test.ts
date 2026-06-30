@@ -9,6 +9,7 @@ import {
   versionsTimelineHtml,
   speedStripHtml,
   axisRowsHtml,
+  axisHeaderHtml,
   coverageHtml,
   rubricHealthHtml,
   builderLogHtml,
@@ -127,6 +128,33 @@ describe('resultsTableHtml', () => {
     expect(html).toContain('class="cid"');
     expect(html).toContain('case-1');
   });
+
+  it('should put the full rationale inside the expandable detail, not only in title=', () => {
+    const results: CaseResult[] = [
+      { caseId: 'case-1', output: 'resp', score: 4, passed: false, rationale: 'missed the required JSON schema', timing },
+    ];
+    const cases = [
+      { id: 'case-1', category: 'typical' as const, input: 'give me JSON', pinned: false },
+    ];
+    const html = resultsTableHtml(results, 6, cases);
+    // The rationale must survive even with title= stripped — it lives in .mdetail.
+    expect(html).toContain('mdetail');
+    const withoutTitles = html.replace(/title="[^"]*"/g, '');
+    expect(withoutTitles).toContain('missed the required JSON schema');
+  });
+
+  it('should expose a non-color aria-label on the score cell conveying value and pass/fail', () => {
+    const results: CaseResult[] = [
+      { caseId: 'p', output: '', score: 8.5, passed: true, rationale: 'ok', timing },
+      { caseId: 'f', output: '', score: 3.2, passed: false, rationale: 'bad', timing },
+    ];
+    const html = resultsTableHtml(results, 6);
+    expect(html).toContain('aria-label="score 8.5, passed"');
+    expect(html).toContain('aria-label="score 3.2, failed"');
+    // Glyph cue still present in the P/F column.
+    expect(html).toContain('pf p');
+    expect(html).toContain('pf f');
+  });
 });
 
 describe('fixesListHtml', () => {
@@ -183,10 +211,48 @@ describe('coverageHtml', () => {
 });
 
 describe('rubricHealthHtml', () => {
-  it('should render discrimination and consistency', () => {
-    const html = rubricHealthHtml({ discrimination: { gap: 2.3, rating: 'good' }, consistency: { stdDev: 0.4, rating: 'good' } });
-    expect(html).toContain('Discrimination good (2.3)');
-    expect(html).toContain('σ0.4');
+  const sample = { discrimination: { gap: 2.3, rating: 'good' }, consistency: { stdDev: 0.4, rating: 'good' } };
+
+  it('should render discrimination and consistency numbers', () => {
+    const html = rubricHealthHtml(sample);
+    expect(html).toContain('good (2.3)'); // discrimination rating + gap
+    expect(html).toContain('σ0.4 (good)'); // consistency sigma + rating
+  });
+
+  it('should lead with an always-visible plain-language verdict (the rating word)', () => {
+    const html = rubricHealthHtml(sample);
+    const summary = html.slice(0, html.indexOf('<details'));
+    expect(summary).toContain('Rubric health');
+    expect(summary).toContain('good'); // rating word visible without expanding
+  });
+
+  it('should demote the numeric stats into an Advanced disclosure', () => {
+    const html = rubricHealthHtml(sample);
+    expect(html).toContain('<details class="adv"><summary>Rubric health detail</summary>');
+    // The stats live inside the disclosure, not before it.
+    const detailIdx = html.indexOf('<details');
+    expect(html.indexOf('σ0.4')).toBeGreaterThan(detailIdx);
+    expect(html.indexOf('(2.3)')).toBeGreaterThan(detailIdx);
+  });
+
+  it('should define the coined terms inline with a glossary title', () => {
+    const html = rubricHealthHtml(sample);
+    expect(html).toContain('<span class="term" title="How well your scoring rubric separates strong from weak answers.">Rubric health</span>');
+    expect(html).toContain('title="Whether the rubric gives clearly different scores to strong vs weak outputs. Higher gap = better separation."');
+    expect(html).toContain('title="How stable scores are when the same output is judged repeatedly (lower variation = more consistent)."');
+  });
+});
+
+describe('axisHeaderHtml', () => {
+  it('should wrap the litmus-axis label in a glossary term with a plain definition', () => {
+    const html = axisHeaderHtml();
+    expect(html).toContain('class="term"');
+    expect(html).toContain('By dimension');
+    expect(html).toContain('title="What changed between two versions, broken down by quality dimension."');
+  });
+
+  it('should escape a custom label', () => {
+    expect(axisHeaderHtml('<x>')).toContain('&lt;x&gt;');
   });
 });
 

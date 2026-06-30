@@ -30,3 +30,14 @@ export async function ensureHostPermission(url: string, api: PermissionsApi = de
   if (await api.contains({ origins })) return true;
   return api.request({ origins });
 }
+
+/**
+ * Whether host permission for `url`'s origin is ALREADY held — a gesture-free
+ * check (`contains` only, never `request`). The run orchestrator uses this: it
+ * executes outside a user gesture, so it cannot prompt for a grant; it must
+ * verify the origin was authorized earlier (via the MCP panel's Connect button)
+ * and refuse to send traffic + the auth secret to an unauthorized origin.
+ */
+export async function hasHostPermission(url: string, api: PermissionsApi = defaultApi()): Promise<boolean> {
+  return api.contains({ origins: [originPatternFor(url)] });
+}

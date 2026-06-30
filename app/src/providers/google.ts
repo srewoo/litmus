@@ -16,24 +16,31 @@ interface ChunkParts {
 }
 
 export function parseGoogleChunk(payload: string): ChunkParts {
+  let json: {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name?: string; args?: unknown } }> } }>;
+    usageMetadata?: { totalTokenCount?: number };
+    error?: { code?: number; message?: string; status?: string };
+  };
   try {
-    const json = JSON.parse(payload) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name?: string; args?: unknown } }> } }>;
-      usageMetadata?: { totalTokenCount?: number };
-    };
-    const out: ChunkParts = {};
-    const parts = json.candidates?.[0]?.content?.parts ?? [];
-    const text = parts.map((p) => p.text ?? '').join('');
-    if (text.length > 0) out.delta = text;
-    const calls = parts
-      .filter((p) => p.functionCall?.name)
-      .map((p) => ({ name: p.functionCall!.name as string, arguments: p.functionCall!.args ?? {} }));
-    if (calls.length > 0) out.toolCalls = calls;
-    if (typeof json.usageMetadata?.totalTokenCount === 'number') out.tokens = json.usageMetadata.totalTokenCount;
-    return out;
+    json = JSON.parse(payload) as typeof json;
   } catch {
     return {};
   }
+  // In-band error frame: Gemini streams `{"error":{...}}` on a mid-stream failure.
+  // Surface it instead of returning a truncated success.
+  if (json.error) {
+    throw new ProviderError('google', json.error.code ?? 0, json.error.message ?? json.error.status ?? 'stream error');
+  }
+  const out: ChunkParts = {};
+  const parts = json.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.map((p) => p.text ?? '').join('');
+  if (text.length > 0) out.delta = text;
+  const calls = parts
+    .filter((p) => p.functionCall?.name)
+    .map((p) => ({ name: p.functionCall!.name as string, arguments: p.functionCall!.args ?? {} }));
+  if (calls.length > 0) out.toolCalls = calls;
+  if (typeof json.usageMetadata?.totalTokenCount === 'number') out.tokens = json.usageMetadata.totalTokenCount;
+  return out;
 }
 
 /** Translate litmus tool defs into Gemini's functionDeclarations shape. */
@@ -64,18 +71,25 @@ function toResponseObject(content: string): Record<string, unknown> {
  * become `functionCall` parts on a model turn; tool results become `functionResponse`
  * parts on a user turn (Gemini matches by name, so no ids are needed).
  */
-function toContents(messages: readonly ChatMessage[]): { system: string; contents: unknown[] } {
+export function toContents(messages: readonly ChatMessage[]): { system: string; contents: unknown[] } {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const contents: unknown[] = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
     if (m.role === 'tool') {
-      contents.push({ role: 'user', parts: [{ functionResponse: { name: m.toolName ?? '', response: toResponseObject(m.content) } }] });
+      // Gemini matches a functionResponse to its call by name — an empty name never
+      // matches and the request is rejected, so require it explicitly.
+      if (!m.toolName) {
+        throw new Error('google: tool result is missing toolName (required to match functionResponse by name)');
+      }
+      contents.push({ role: 'user', parts: [{ functionResponse: { name: m.toolName, response: toResponseObject(m.content) } }] });
     } else if (m.role === 'assistant' && m.toolCalls?.length) {
       const parts: unknown[] = m.content ? [{ text: m.content }] : [];
       for (const c of m.toolCalls) parts.push({ functionCall: { name: c.name, args: c.arguments ?? {} } });
       contents.push({ role: 'model', parts });
     } else {
+      // Gemini rejects an empty text part (parts:[{text:''}]); skip empty content.
+      if (m.content.length === 0) continue;
       contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
     }
   }
@@ -116,8 +130,9 @@ export class GoogleProvider implements Provider {
     let tokens: number | undefined;
     const toolCalls: ToolCall[] = [];
     const body = res.body;
+    const signal = options.signal;
     async function* deltas(): AsyncIterable<string> {
-      for await (const payload of iterateSSE(body)) {
+      for await (const payload of iterateSSE(body, signal)) {
         const p = parseGoogleChunk(payload);
         if (p.tokens !== undefined) tokens = p.tokens;
         if (p.toolCalls) toolCalls.push(...p.toolCalls);

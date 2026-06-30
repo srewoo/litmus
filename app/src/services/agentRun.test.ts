@@ -152,4 +152,29 @@ describe('scoreScenario', () => {
     expect(v).toMatchObject({ passed: false, score: 0 });
     expect(v.rationale).toMatch(/3-step cap/);
   });
+
+  it('counts only tool-use turns as steps: one tool call then a no-tool answer is 1 step', () => {
+    // Step 0 issues a tool call; step 1 is the final no-tool answer turn. The
+    // answer turn must NOT be counted toward the efficiency step total.
+    const t = traj({
+      steps: [
+        { modelText: 'checking', toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }], toolResults: [{ name: 'get_weather', result: { value: 1 }, known: true, argsValid: true }] },
+        { modelText: 'Wear a jacket.', toolCalls: [], toolResults: [] },
+      ],
+    });
+    const v = scoreScenario(t, scenario({ maxSteps: 4 }));
+    expect(v.rationale).toMatch(/\b1\/4 steps\b/); // 1 tool step, not 2
+    // 1 <= ceil(4/2)=2 → efficient
+    expect(v.dimensions.find((d) => d.dimension === 'efficiency')?.score).toBe(10);
+  });
+
+  it('efficiency drops when tool-use turns exceed half the step cap (final answer excluded)', () => {
+    const toolStep = (n: string) => ({ modelText: 'x', toolCalls: [{ name: 'get_weather', arguments: { city: n } }], toolResults: [{ name: 'get_weather', result: { value: 1 }, known: true, argsValid: true }] });
+    const t = traj({
+      steps: [toolStep('a'), toolStep('b'), toolStep('c'), { modelText: 'done', toolCalls: [], toolResults: [] }],
+    });
+    const v = scoreScenario(t, scenario({ maxSteps: 4 }));
+    expect(v.rationale).toMatch(/\b3\/4 steps\b/); // 3 tool steps, answer excluded
+    expect(v.dimensions.find((d) => d.dimension === 'efficiency')?.score).toBe(6);
+  });
 });

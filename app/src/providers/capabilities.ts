@@ -23,3 +23,30 @@ export function isChatModel(provider: ProviderId, model: string): boolean {
   if (provider === 'openai') return !OPENAI_NON_CHAT.test(model);
   return true;
 }
+
+/**
+ * Whether a model accepts the `tools` / function-calling parameter. Conservative
+ * per current model families:
+ *  - OpenAI: gpt-4 / gpt-4o / gpt-4.1 / o-series / gpt-5 all support tools, and
+ *    gpt-3.5-turbo supports tools. Non-chat models (embeddings, TTS, ...) do not.
+ *  - Anthropic: claude-3 and newer (claude-3, claude-3.5, claude-4, ...) support tools.
+ *  - Google: gemini-1.5 and the 2.x line (and newer) support tools.
+ */
+export function supportsTools(provider: ProviderId, model: string): boolean {
+  if (provider === 'openai') {
+    if (!isChatModel('openai', model)) return false;
+    // gpt-3.5-turbo supports tools, but the legacy gpt-3.5 base/instruct models do not.
+    if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
+    return /^(gpt-4|gpt-5|chatgpt-4|o\d)/i.test(model);
+  }
+  if (provider === 'anthropic') {
+    // Tool use shipped with claude-3; claude-2 / claude-instant predate it.
+    return /claude-(3|4|opus-4|sonnet-4|haiku-4|[5-9])/i.test(model);
+  }
+  if (provider === 'google') {
+    // gemini-1.5 and the 2.x+ families support function calling; gemini-1.0/pro-vision do not.
+    if (/gemini-1\.0/i.test(model)) return false;
+    return /gemini-(1\.5|[2-9])/i.test(model);
+  }
+  return false;
+}

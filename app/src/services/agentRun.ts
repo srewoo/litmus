@@ -166,7 +166,10 @@ export function scoreScenario(trajectory: Trajectory, scenario: Scenario): Scena
   const unknown = results.filter((r) => !r.known);
   const errors = results.filter((r) => 'error' in r.result);
   const badArgs = results.filter((r) => !r.argsValid);
-  const stepsUsed = trajectory.steps.length;
+  // Efficiency counts only the turns that actually issued tool calls. The final
+  // no-tool answer turn is not "work spent" toward the goal, so including it
+  // over-counts by one and prints a misleading step total.
+  const stepsUsed = trajectory.steps.filter((s) => s.toolCalls.length > 0).length;
 
   const goalScore = goal.passed ? 10 : 0;
   const toolSelection = results.length ? round1(((results.length - unknown.length) / results.length) * 10) : 10;

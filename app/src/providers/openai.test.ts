@@ -28,6 +28,9 @@ describe('parseOpenAIChunk', () => {
   it('should return empty parts for a malformed frame', () => {
     expect(parseOpenAIChunk('not json')).toEqual({});
   });
+  it('should throw a ProviderError on an in-band error frame', () => {
+    expect(() => parseOpenAIChunk('{"error":{"message":"rate limited","type":"rate_limit_error"}}')).toThrow(ProviderError);
+  });
   it('should extract tool-call fragments', () => {
     const parts = parseOpenAIChunk('{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"{\\"ci"}}]}}]}');
     expect(parts.toolCalls).toEqual([{ index: 0, name: 'get_weather', argsFragment: '{"ci' }]);
@@ -136,6 +139,25 @@ describe('OpenAIProvider.chat', () => {
       provider.chat(
         { model: 'gpt-5.1', messages: [{ role: 'user', content: 'hi' }] },
         { apiKey: 'bad', fetchImpl },
+      ),
+    ).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('should fail the run when an error frame arrives mid-stream', async () => {
+    const fetchImpl = async (): Promise<FetchResponse> => ({
+      ok: true,
+      status: 200,
+      body: streamFrom([
+        'data: {"choices":[{"delta":{"content":"par"}}]}\n',
+        'data: {"error":{"message":"server overloaded","type":"server_error"}}\n',
+        'data: [DONE]\n',
+      ]),
+      text: async () => '',
+    });
+    await expect(
+      new OpenAIProvider().chat(
+        { model: 'gpt-5.1', messages: [{ role: 'user', content: 'hi' }] },
+        { apiKey: 'sk', fetchImpl, clock: fakeClock([0, 10, 20]) },
       ),
     ).rejects.toBeInstanceOf(ProviderError);
   });

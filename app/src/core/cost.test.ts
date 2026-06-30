@@ -12,6 +12,12 @@ describe('costForCall', () => {
     // default: in 0.005/1k, out 0.015/1k → 1000 in + 500 out = 0.005 + 0.0075
     expect(costForCall('mystery', 1000, 500)).toBeCloseTo(0.0125, 6);
   });
+
+  it('should clamp negative token counts to 0 (never a negative cost)', () => {
+    expect(costForCall('mystery', -1000, -500)).toBe(0);
+    // a negative input but positive output: only the output is priced
+    expect(costForCall('mystery', -1000, 500)).toBeCloseTo(0.0075, 6);
+  });
 });
 
 describe('estimateRun', () => {
@@ -46,6 +52,20 @@ describe('estimateRun', () => {
     const e = estimateRun({ ...base, includeAnalysis: false, includeEvalGen: false, includeFixes: false, judgeSamples: 3 });
     expect(e.totalCalls).toBe(8); // 2 generate + 2 cases * 3 judges
     expect(e.estUsd).toBeCloseTo(0.1, 6); // 8 * 0.0125
+  });
+
+  it('should clamp negative case/token counts to 0 (no negative cost or weakened cap)', () => {
+    const e = estimateRun({
+      ...base,
+      caseCount: -5,
+      avgInputTokens: -1000,
+      avgOutputTokens: -500,
+      includeAnalysis: false,
+      includeEvalGen: false,
+      includeFixes: false,
+    });
+    expect(e.totalCalls).toBe(0); // caseCount clamped to 0 → 0 generate + 0 judge
+    expect(e.estUsd).toBe(0);
   });
 });
 

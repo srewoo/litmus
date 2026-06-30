@@ -86,6 +86,77 @@ describe('SessionTabStore', () => {
     expect(await tabB.getVersions()).toEqual([]);
   });
 
+  it('should not lose writes when two mutations run concurrently', async () => {
+    // Storage area whose get/set resolve on a microtask so two read-modify-write
+    // ops genuinely interleave — without serialization the second read would see
+    // the pre-write blob and clobber the first write (the P0 lost-update race).
+    class SlowStorageArea implements StorageArea {
+      readonly store = new Map<string, unknown>();
+      async get(keys: string | string[]): Promise<Record<string, unknown>> {
+        await Promise.resolve();
+        const arr = Array.isArray(keys) ? keys : [keys];
+        const out: Record<string, unknown> = {};
+        for (const k of arr) if (this.store.has(k)) out[k] = this.store.get(k);
+        return out;
+      }
+      async set(items: Record<string, unknown>): Promise<void> {
+        await Promise.resolve();
+        for (const [k, v] of Object.entries(items)) this.store.set(k, v);
+      }
+      async remove(keys: string | string[]): Promise<void> {
+        const arr = Array.isArray(keys) ? keys : [keys];
+        for (const k of arr) this.store.delete(k);
+      }
+    }
+
+    const store = storeFor(new SlowStorageArea(), 1);
+    // Interleave two version writes and two run writes started together.
+    await Promise.all([
+      store.putVersion(version('v1', 1)),
+      store.putVersion(version('v2', 2)),
+      store.putRun(run('v1', 7)),
+      store.putRun(run('v2', 9)),
+    ]);
+
+    const versions = await store.getVersions();
+    expect(versions.map((v) => v.id)).toEqual(['v1', 'v2']);
+    expect((await store.getRun('v1'))?.summary.overall).toBe(7);
+    expect((await store.getRun('v2'))?.summary.overall).toBe(9);
+  });
+
+  it('should keep the mutation queue working after a failing mutation', async () => {
+    let failNext = true;
+    class FlakyStorageArea implements StorageArea {
+      readonly store = new Map<string, unknown>();
+      async get(keys: string | string[]): Promise<Record<string, unknown>> {
+        await Promise.resolve();
+        if (failNext) {
+          failNext = false;
+          throw new Error('transient read failure');
+        }
+        const arr = Array.isArray(keys) ? keys : [keys];
+        const out: Record<string, unknown> = {};
+        for (const k of arr) if (this.store.has(k)) out[k] = this.store.get(k);
+        return out;
+      }
+      async set(items: Record<string, unknown>): Promise<void> {
+        for (const [k, v] of Object.entries(items)) this.store.set(k, v);
+      }
+      async remove(keys: string | string[]): Promise<void> {
+        const arr = Array.isArray(keys) ? keys : [keys];
+        for (const k of arr) this.store.delete(k);
+      }
+    }
+
+    const store = storeFor(new FlakyStorageArea(), 1);
+    // read() swallows errors and returns EMPTY, so the first op succeeds against
+    // an empty blob; the key assertion is that the chain is not broken and the
+    // second queued op still runs and persists.
+    await store.putVersion(version('v1', 1));
+    await store.putVersion(version('v2', 2));
+    expect((await store.getVersions()).map((v) => v.id)).toEqual(['v1', 'v2']);
+  });
+
   it('should leave a tab empty again once its namespace key is removed (tab-close cleanup)', async () => {
     const area = new InMemoryStorageArea();
     const store = storeFor(area, 5);

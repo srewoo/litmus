@@ -7,7 +7,7 @@ import type { ChatMessage, Provider } from '../providers/types';
 import type { Clock } from '../core/stream';
 import type { FetchLike } from '../providers/types';
 import { FixesSchema } from '../shared/schema';
-import { failingFirst } from '../core/results';
+import { failingFirst, DEFAULT_PASS_THRESHOLD } from '../core/results';
 import { callJson } from './jsonCall';
 import { chatOptions } from './opts';
 import type { z } from 'zod';
@@ -35,9 +35,11 @@ interface FailureContext {
 export function collectFailures(
   cases: readonly EvalCase[],
   results: readonly CaseResult[],
-  threshold = 6,
+  threshold = DEFAULT_PASS_THRESHOLD,
 ): FailureContext[] {
   const caseById = new Map(cases.map((c) => [c.id, c]));
+  // Single authority: the per-case `passed` flag. `failingFirst` orders by the
+  // same flag, so ordering and filtering can never disagree.
   return failingFirst(results, threshold)
     .filter((r) => !r.passed)
     .map((r) => ({
@@ -81,7 +83,7 @@ export async function suggestFixes(
   results: readonly CaseResult[],
   deps: FixDeps,
 ): Promise<Fix[]> {
-  const failures = collectFailures(cases, results, deps.passThreshold ?? 6);
+  const failures = collectFailures(cases, results, deps.passThreshold ?? DEFAULT_PASS_THRESHOLD);
   if (failures.length === 0) return [];
   return callJson(
     deps.provider,

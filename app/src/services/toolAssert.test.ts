@@ -75,6 +75,32 @@ describe('assertToolCalls', () => {
     expect(assertToolCalls([call('anything', {})], {}).passed).toBe(true);
   });
 
+  it('passes a forbidden-only expectation when a different tool with invalid args is called (forbidden avoided)', () => {
+    // Adversarial case: only forbiddenTools, no expectedTool. The model avoids
+    // the forbidden tool but calls another tool with imperfect args. With no
+    // expectedTool we must NOT validate that arbitrary call's args/schema.
+    const r = assertToolCalls(
+      [call('get_weather', { days: 'three' })], // missing required city + wrong type
+      { forbiddenTools: ['delete_account'] },
+      [weatherDef],
+    );
+    expect(r.passed).toBe(true);
+    expect(r.score).toBe(10);
+    expect(r.reasons).toEqual([]);
+  });
+
+  it('still fails a forbidden-only expectation when the forbidden tool is called', () => {
+    const r = assertToolCalls([call('delete_account', {})], { forbiddenTools: ['delete_account'] }, [weatherDef]);
+    expect(r.passed).toBe(false);
+    expect(r.reasons[0]).toMatch(/forbidden tool "delete_account"/);
+  });
+
+  it('does not validate an arbitrary first call when there is no expectedTool', () => {
+    // First call has unparseable args; without expectedTool it is not validated.
+    const r = assertToolCalls([call('search', undefined, '{bad:'), call('get_weather', { city: 'Paris' })], {});
+    expect(r.passed).toBe(true);
+  });
+
   it('describes the verdict in one line', () => {
     expect(describeToolAssert({ passed: true, score: 10, reasons: [] })).toMatch(/met/);
     expect(describeToolAssert({ passed: false, score: 0, reasons: ['a', 'b'] })).toMatch(/a; b/);

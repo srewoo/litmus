@@ -4,8 +4,8 @@ import type { CaseResult, Timing } from '../shared/types';
 
 const timing: Timing = { ttfbMs: 100, totalMs: 1000, tokens: 10, tokensPerSec: 10 };
 
-function result(caseId: string, score: number): CaseResult {
-  return { caseId, output: 'o', score, passed: score >= 6, rationale: 'r', timing };
+function result(caseId: string, score: number, passed = score >= 6): CaseResult {
+  return { caseId, output: 'o', score, passed, rationale: 'r', timing };
 }
 
 describe('foldSamples', () => {
@@ -44,17 +44,31 @@ describe('summarizeRun', () => {
     expect(s).toMatchObject({ overall: 0, passCount: 0, failCount: 0, total: 0 });
   });
 
-  it('should compute overall mean and pass/fail from the threshold', () => {
+  it('should compute overall mean and count pass/fail from the per-case flag', () => {
     const s = summarizeRun([result('a', 9), result('b', 3), result('c', 6)]);
     expect(s.overall).toBe(6); // mean(9,3,6)
-    expect(s.passCount).toBe(2); // 9 and 6
-    expect(s.failCount).toBe(1); // 3
+    expect(s.passCount).toBe(2); // a and c passed
+    expect(s.failCount).toBe(1); // b failed
     expect(s.total).toBe(3);
   });
 
-  it('should respect a custom threshold', () => {
-    const s = summarizeRun([result('a', 7), result('b', 9)], 8);
+  it('should derive counts from the per-case flag, not by re-thresholding the score', () => {
+    // The flag is the single source of truth: a custom threshold was already
+    // applied upstream when `passed` was set. Here case 'a' (score 7) was failed.
+    const s = summarizeRun([result('a', 7, false), result('b', 9, true)]);
     expect(s.passCount).toBe(1);
+    expect(s.failCount).toBe(1);
+  });
+
+  it('should agree with the per-case flag for a sampled case (majority vote)', () => {
+    // foldSamples of [10,5,5] @6 → mean 6.67, but only 1/3 samples pass → passed=false.
+    // summarizeRun must honour that flag, not re-threshold the mean (which would "pass").
+    const folded = foldSamples([result('s', 10), result('s', 5), result('s', 5)], 6);
+    expect(folded.passed).toBe(false);
+    expect(folded.score).toBeGreaterThanOrEqual(6); // mean would re-threshold as a pass
+    const s = summarizeRun([folded], 6);
+    expect(s.passCount).toBe(0); // headline agrees with the per-case fail
+    expect(s.failCount).toBe(1);
   });
 });
 

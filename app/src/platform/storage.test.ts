@@ -38,6 +38,19 @@ describe('settings storage', () => {
     await expect(setKey(area, 'openai', '')).rejects.toThrow();
   });
 
+  it('should fall back to defaults when stored settings are corrupt instead of throwing', async () => {
+    const area = new InMemoryStorageArea();
+    // Schema-drifted / corrupt blob: passThreshold out of range and keys the
+    // wrong type. parse() would throw and hard-brick the panel; loadSettings
+    // must return sane defaults instead.
+    await area.set({ 'litmus:settings': { passThreshold: 99, keys: 'not-an-object', samples: -3 } });
+
+    const s = await loadSettings(area);
+    expect(s.keys).toEqual({});
+    expect(s.passThreshold).toBe(6);
+    expect(s.samples).toBe(1);
+  });
+
   it('should clear all keys but keep other settings', async () => {
     const area = new InMemoryStorageArea();
     await setKey(area, 'openai', 'sk-abc');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { round1, clamp, mean } from './num';
+import { round1, clamp, mean, positiveCount } from './num';
 
 describe('round1', () => {
   it('should round to one decimal place', () => {
@@ -29,5 +29,23 @@ describe('mean', () => {
   });
   it('should return 0 for an empty list rather than NaN', () => {
     expect(mean([])).toBe(0);
+  });
+});
+
+describe('positiveCount', () => {
+  it('should pass finite counts >= 1 through, floored', () => {
+    expect(positiveCount(1)).toBe(1);
+    expect(positiveCount(3)).toBe(3);
+    expect(positiveCount(2.9)).toBe(2);
+  });
+  it('should floor sub-1 and negative values up to 1', () => {
+    expect(positiveCount(0)).toBe(1);
+    expect(positiveCount(0.4)).toBe(1);
+    expect(positiveCount(-5)).toBe(1);
+  });
+  it('should collapse non-finite counts to 1 (no hang / RangeError / zero runs)', () => {
+    expect(positiveCount(NaN)).toBe(1);
+    expect(positiveCount(Infinity)).toBe(1);
+    expect(positiveCount(-Infinity)).toBe(1);
   });
 });

@@ -139,7 +139,7 @@ async function onConnect(): Promise<void> {
 
 function renderTabs(): void {
   for (const btn of Array.from(document.querySelectorAll<HTMLElement>('.mcptab'))) {
-    btn.setAttribute('aria-pressed', String(btn.dataset['cat'] === s.cat));
+    btn.setAttribute('aria-selected', String(btn.dataset['cat'] === s.cat));
   }
 }
 
@@ -325,12 +325,23 @@ export function initMcpPanel(nav: { onBack: () => void } = { onBack: () => {} })
     const li = (e.target as HTMLElement).closest('.mcp-tool') as HTMLElement | null;
     if (li?.dataset['tool']) selectTool(li.dataset['tool']);
   });
-  for (const btn of Array.from(document.querySelectorAll<HTMLElement>('.mcptab'))) {
+  const tabBtns = Array.from(document.querySelectorAll<HTMLElement>('.mcptab'));
+  tabBtns.forEach((btn, i) => {
     btn.addEventListener('click', () => {
       s.cat = (btn.dataset['cat'] as State['cat']) ?? 'tools';
       renderTabs();
       renderCatalog();
     });
-  }
+    // Roving arrow-key navigation across the tablist (ARIA tab pattern).
+    btn.addEventListener('keydown', (e) => {
+      const ev = e as KeyboardEvent;
+      if (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft') return;
+      ev.preventDefault();
+      const dir = ev.key === 'ArrowRight' ? 1 : -1;
+      const next = tabBtns[(i + dir + tabBtns.length) % tabBtns.length];
+      next?.click();
+      next?.focus();
+    });
+  });
   void restore();
 }

@@ -228,9 +228,42 @@ describe('runEval', () => {
       targetProvider: agentTarget,
       mcpServers: servers,
       fetchImpl: mcpFetch,
+      // The origin was authorized earlier via the panel's Connect button.
+      permissions: { contains: async () => true, request: async () => true },
       signal: new AbortController().signal,
     });
     expect(results[0]).toMatchObject({ caseId: 'm1', passed: true });
+  });
+
+  it('should refuse an MCP-backed scenario whose origin is not authorized', async () => {
+    const agentTarget: Provider = { id: 'openai', async chat() { return { text: 'Wear a jacket.', timing }; } };
+    const servers: McpServerConfig[] = [{ id: 'srv', name: 'demo', url: 'https://h/mcp', transport: 'http' }];
+    const scenarioCase: EvalCase = {
+      id: 'm1', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [], maxSteps: 3, successContains: ['jacket'], mcpServerId: 'srv' },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], {
+      ...baseDeps,
+      targetProvider: agentTarget,
+      mcpServers: servers,
+      // Permission not held → the run must not connect or send the auth secret.
+      permissions: { contains: async () => false, request: async () => false },
+    });
+    expect(results[0]).toMatchObject({ caseId: 'm1', passed: false });
+    expect(results[0]?.rationale).toContain('not authorized');
+  });
+
+  it('should refuse tool/agent cases on a model that does not support tools', async () => {
+    const toolCases: EvalCase[] = [
+      { id: 't1', category: 'typical', input: 'weather?', pinned: false, toolExpectations: { expectedTool: 'get_weather' } },
+    ];
+    const { results } = await runEval('SYS', toolCases, {
+      ...baseDeps,
+      // claude-2 predates tool use → supportsTools is false.
+      target: { provider: 'anthropic', model: 'claude-2.1' },
+    });
+    expect(results[0]).toMatchObject({ caseId: 't1', passed: false });
+    expect(results[0]?.rationale).toContain('does not support tool');
   });
 
   it('should record a failed case when the provider throws a non-Error value', async () => {
@@ -271,5 +304,55 @@ describe('runEval', () => {
     expect(i).toBe(3); // judged three times
     expect(results[0]?.score).toBe(9); // median(9,9,2)
     expect(results[0]?.rationale).toMatch(/median 9/);
+  });
+
+  it('should still report aggregated timing for an INCOMPLETE (max_steps) agent run', async () => {
+    // Model never emits a final answer — it calls a tool every turn until the cap.
+    const turnTiming: Timing = { ttfbMs: 30, totalMs: 150, tokens: 10, tokensPerSec: 66 };
+    const looper: Provider = {
+      id: 'openai',
+      async chat() {
+        return { text: 'still working', timing: turnTiming, toolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }] };
+      },
+    };
+    const scenarioCase: EvalCase = {
+      id: 'cap', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [{ name: 'get_weather', description: 'w', parameters: { type: 'object' }, results: [{ value: {} }] }], maxSteps: 3, successContains: ['jacket'] },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], { ...baseDeps, targetProvider: looper });
+    expect(results[0]?.passed).toBe(false); // hit the cap without finishing
+    expect(results[0]?.timing.ttfbMs).toBe(30); // first turn's TTFB still surfaced
+    expect(results[0]?.timing.totalMs).toBe(450); // 3 capped turns × 150ms — not zero
+  });
+
+  it('should isolate a throwing case under concurrency without aborting the others or reordering', async () => {
+    const flaky: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        const userTurn = req.messages.find((m) => m.role === 'user');
+        if (userTurn?.content.includes('in2')) throw new Error('boom on c2');
+        return { text: `out:${userTurn?.content ?? ''}`, timing };
+      },
+    };
+    const many: EvalCase[] = Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, category: 'typical', input: `in${i}`, pinned: false }));
+    const { results } = await runEval('SYS', many, { ...baseDeps, targetProvider: flaky, concurrency: 4 });
+    expect(results.map((r) => r.caseId)).toEqual(['c0', 'c1', 'c2', 'c3', 'c4']); // order preserved
+    expect(results[2]?.passed).toBe(false); // the failed one is captured, not thrown
+    expect(results[2]?.rationale).toMatch(/Run failed: boom on c2/);
+    expect(results.filter((r) => r.passed)).toHaveLength(4); // the rest succeeded
+  });
+
+  it('should not hang or throw on a non-finite samples / concurrency count', async () => {
+    const one: EvalCase[] = [{ id: 'c1', category: 'typical', input: 'good input', pinned: false }];
+    // Infinity samples would spin `for (s = 0; s < Infinity; s++)` forever and
+    // NaN concurrency would make the worker pool a no-op without the guards.
+    const { results } = await runEval('SYS', one, {
+      ...baseDeps,
+      samples: Number.POSITIVE_INFINITY,
+      concurrency: Number.NaN,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.score).toBe(9); // ran exactly once (collapsed to 1 sample)
+    expect(results[0]?.samples).toBeUndefined(); // single run → no spread block
   });
 });

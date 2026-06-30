@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ensureHostPermission, originPatternFor, type PermissionsApi } from './hostPermission';
+import { ensureHostPermission, hasHostPermission, originPatternFor, type PermissionsApi } from './hostPermission';
 
 describe('originPatternFor', () => {
   it('derives an origin pattern from a URL with a path', () => {
@@ -40,5 +40,33 @@ describe('ensureHostPermission', () => {
   it('returns false when the user denies the request', async () => {
     const api: PermissionsApi = { contains: () => Promise.resolve(false), request: () => Promise.resolve(false) };
     expect(await ensureHostPermission('https://c.example/rpc', api)).toBe(false);
+  });
+});
+
+describe('hasHostPermission', () => {
+  it('reflects an already-held grant without ever requesting (gesture-free)', async () => {
+    let requested = false;
+    const api: PermissionsApi = {
+      contains: (p) => Promise.resolve(p.origins[0] === 'https://held.example/*'),
+      request: () => {
+        requested = true;
+        return Promise.resolve(true);
+      },
+    };
+    expect(await hasHostPermission('https://held.example/rpc', api)).toBe(true);
+    expect(requested).toBe(false);
+  });
+
+  it('returns false (never prompts) when the origin is not authorized', async () => {
+    let requested = false;
+    const api: PermissionsApi = {
+      contains: () => Promise.resolve(false),
+      request: () => {
+        requested = true;
+        return Promise.resolve(true);
+      },
+    };
+    expect(await hasHostPermission('https://nope.example/rpc', api)).toBe(false);
+    expect(requested).toBe(false);
   });
 });

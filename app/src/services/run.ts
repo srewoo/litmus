@@ -14,9 +14,13 @@ import { providerStep } from './agentStep';
 import { mcpResolver } from './toolResolver';
 import { connectMcp } from '../mcp/client';
 import type { McpServerConfig } from '../mcp/types';
+import { supportsTools } from '../providers/capabilities';
+import { hasHostPermission } from '../platform/hostPermission';
+import type { PermissionsApi } from '../platform/hostPermission';
 import { chatOptions } from './opts';
 import { aggregateTrajectoryTiming } from '../core/timing';
 import { mapWithConcurrency } from '../shared/concurrency';
+import { positiveCount } from '../shared/num';
 import { summarizeRun, scorePasses, foldSamples, DEFAULT_PASS_THRESHOLD } from '../core/results';
 
 export interface RunDeps {
@@ -49,9 +53,19 @@ export interface RunDeps {
   readonly tools?: readonly ToolDef[];
   /** Configured MCP servers a scenario may target by id (ADR 0003). */
   readonly mcpServers?: readonly McpServerConfig[];
+  /**
+   * Chrome permissions surface (injectable for tests). The run path executes
+   * outside a user gesture and so cannot PROMPT for a host grant; it only
+   * verifies an MCP origin was already authorized (via the panel's Connect
+   * button) before sending traffic + the auth secret. Defaults to the real
+   * `chrome.permissions` when omitted.
+   */
+  readonly permissions?: PermissionsApi;
   readonly fetchImpl?: FetchLike;
   readonly clock?: Clock;
   readonly signal?: AbortSignal;
+  /** Called as each case finishes, for determinate run progress in the UI. */
+  readonly onProgress?: (done: number, total: number) => void;
 }
 
 export interface RunOutcome {
@@ -118,6 +132,16 @@ function mockToolDefs(scenario: NonNullable<EvalCase['scenario']>): ToolDef[] {
 async function wireMcp(serverId: string, deps: RunDeps): Promise<{ tools: ToolDef[]; resolver: ReturnType<typeof mcpResolver> }> {
   const config = (deps.mcpServers ?? []).find((s) => s.id === serverId);
   if (!config) throw new Error(`MCP server "${serverId}" is not configured`);
+  // SECURITY (ADR 0003): the agent-run path is NOT inside a user gesture, so it
+  // cannot request a host grant; it must refuse to connect (and attach the auth
+  // secret) to an origin the user never authorized via the MCP panel's Connect
+  // button. Verify the grant is already held, fail loudly otherwise.
+  const authorized = await hasHostPermission(config.url, deps.permissions);
+  if (!authorized) {
+    throw new Error(
+      `MCP server "${serverId}" origin is not authorized — open the MCP panel and Connect once to grant access before running.`,
+    );
+  }
   const client = connectMcp(config, {
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.signal ? { signal: deps.signal } : {}),
@@ -136,6 +160,21 @@ async function runOneCase(systemPrompt: string, evalCase: EvalCase, deps: RunDep
   const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
   const isToolCase = evalCase.toolExpectations !== undefined;
   try {
+    // Tool-expectation and agent-scenario cases require function calling. A model
+    // that doesn't accept the `tools` param would 400 at the provider and be
+    // recorded as a generic failure; instead, surface a clear, deterministic
+    // "model can't be tool-tested" result (no wasted/confusing network call).
+    if ((isToolCase || evalCase.scenario) && !supportsTools(deps.target.provider, deps.target.model)) {
+      return {
+        caseId: evalCase.id,
+        output: '',
+        score: 0,
+        passed: false,
+        rationale: `Model ${deps.target.provider}/${deps.target.model} does not support tool/function calling — cannot run tool or agent cases.`,
+        timing: ZERO_TIMING,
+      };
+    }
+
     // Multi-turn agent scenario: run the loop, score the trajectory (no single generation).
     if (evalCase.scenario) return await scenarioCaseResult(systemPrompt, evalCase, deps);
 
@@ -215,10 +254,16 @@ export async function runEval(
   deps: RunDeps,
 ): Promise<RunOutcome> {
   const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
-  const samples = Math.max(1, Math.floor(deps.samples ?? 1));
-  const concurrency = Math.max(1, Math.floor(deps.concurrency ?? 1));
-  const results = await mapWithConcurrency(cases, concurrency, (evalCase) =>
-    runCaseSampled(systemPrompt, evalCase, deps, samples, threshold),
-  );
+  // `positiveCount` keeps a non-finite count from hanging the sample loop
+  // (`s < Infinity`) or folding zero runs; `mapWithConcurrency` guards the
+  // concurrency value itself, so a degenerate count can never abort the run.
+  const samples = positiveCount(deps.samples ?? 1);
+  const concurrency = positiveCount(deps.concurrency ?? 1);
+  let done = 0;
+  const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
+    const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
+    deps.onProgress?.(++done, cases.length);
+    return r;
+  });
   return { results, summary: summarizeRun(results, threshold) };
 }

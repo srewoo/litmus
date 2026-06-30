@@ -25,9 +25,18 @@ export function accumulateToolDeltas(acc: ToolAcc, frags: readonly ToolCallDelta
   }
 }
 
-/** Reassemble accumulated fragments into normalized ToolCall[]. */
+/**
+ * Reassemble accumulated fragments into normalized ToolCall[], ordered by the
+ * provider-reported block `index`. Map-insertion order can diverge from index
+ * order when fragments arrive interleaved, which breaks positional
+ * correspondence — so sort by index (numeric ascending) before emitting.
+ * Entries with a non-finite index sort stably after well-defined ones.
+ */
 export function assembleToolCalls(acc: ToolAcc): ToolCall[] {
-  return [...acc.values()]
+  const indexFallback = (i: number) => (Number.isFinite(i) ? i : Number.POSITIVE_INFINITY);
+  return [...acc.entries()]
+    .sort(([a], [b]) => indexFallback(a) - indexFallback(b))
+    .map(([, e]) => e)
     .filter((e) => e.name)
     .map((e) => {
       try {

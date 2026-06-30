@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema } from './schema';
+import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema, isSafeHttpUrl } from './schema';
 
 describe('parseSettings', () => {
   it('should apply defaults to an empty object', () => {
@@ -38,6 +38,66 @@ describe('McpServerConfigSchema', () => {
   });
   it('rejects an unknown transport', () => {
     expect(McpServerConfigSchema.safeParse({ id: 's1', name: 'd', url: 'https://h', transport: 'stdio' }).success).toBe(false);
+  });
+});
+
+describe('isSafeHttpUrl (SSRF guard)', () => {
+  it('should accept ordinary http and https public hosts', () => {
+    expect(isSafeHttpUrl('https://mcp.example.com/rpc')).toBe(true);
+    expect(isSafeHttpUrl('http://mcp.example.com/rpc')).toBe(true);
+    expect(isSafeHttpUrl('https://8.8.8.8/rpc')).toBe(true); // public IPv4 literal
+    expect(isSafeHttpUrl('https://[2606:4700:4700::1111]/rpc')).toBe(true); // public IPv6
+  });
+  it('should reject non-http(s) schemes', () => {
+    expect(isSafeHttpUrl('file:///etc/passwd')).toBe(false);
+    expect(isSafeHttpUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeHttpUrl('ftp://example.com/x')).toBe(false);
+  });
+  it('should reject localhost and loopback', () => {
+    expect(isSafeHttpUrl('http://localhost:3000/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://api.localhost/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://127.0.0.1/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://127.5.5.5/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[::1]/rpc')).toBe(false);
+  });
+  it('should reject cloud-metadata and link-local addresses', () => {
+    expect(isSafeHttpUrl('http://169.254.169.254/latest/meta-data/')).toBe(false);
+    expect(isSafeHttpUrl('http://169.254.0.1/x')).toBe(false);
+  });
+  it('should reject RFC1918 private ranges', () => {
+    expect(isSafeHttpUrl('http://10.0.0.5/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://172.16.0.1/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://172.31.255.255/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://192.168.1.1/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://0.0.0.0/rpc')).toBe(false);
+  });
+  it('should allow 172.x outside the 16-31 private band', () => {
+    expect(isSafeHttpUrl('https://172.32.0.1/rpc')).toBe(true);
+    expect(isSafeHttpUrl('https://172.15.0.1/rpc')).toBe(true);
+  });
+  it('should reject IPv6 ULA and link-local literals', () => {
+    expect(isSafeHttpUrl('http://[fc00::1]/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[fd12:3456::1]/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[fe80::1]/rpc')).toBe(false);
+  });
+  it('should reject a malformed url', () => {
+    expect(isSafeHttpUrl('not-a-url')).toBe(false);
+    expect(isSafeHttpUrl('')).toBe(false);
+  });
+});
+
+describe('McpServerConfigSchema SSRF refinement', () => {
+  it('rejects a loopback url', () => {
+    expect(McpServerConfigSchema.safeParse({ id: 's1', name: 'd', url: 'http://127.0.0.1/mcp' }).success).toBe(false);
+  });
+  it('rejects the cloud-metadata url', () => {
+    expect(McpServerConfigSchema.safeParse({ id: 's1', name: 'd', url: 'http://169.254.169.254/' }).success).toBe(false);
+  });
+  it('rejects a file:// url', () => {
+    expect(McpServerConfigSchema.safeParse({ id: 's1', name: 'd', url: 'file:///etc/passwd' }).success).toBe(false);
+  });
+  it('accepts a public https url', () => {
+    expect(McpServerConfigSchema.safeParse({ id: 's1', name: 'd', url: 'https://mcp.example.com/rpc' }).success).toBe(true);
   });
 });
 

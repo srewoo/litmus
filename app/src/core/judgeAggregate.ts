@@ -77,9 +77,16 @@ export function aggregateVerdicts(verdicts: readonly VerdictLike[]): AggregatedV
   const first = verdicts[0];
   if (!first) throw new Error('aggregateVerdicts: no verdicts');
   if (verdicts.length === 1) {
+    // Apply round1 to the score and dimension scores so N=1 matches the median
+    // contract used for N>1 (median() also rounds), keeping output consistent.
+    const score = round1(first.score);
     return first.dimensions
-      ? { score: first.score, rationale: first.rationale, dimensions: first.dimensions }
-      : { score: first.score, rationale: first.rationale };
+      ? {
+          score,
+          rationale: first.rationale,
+          dimensions: first.dimensions.map((d) => ({ dimension: d.dimension, score: round1(d.score) })),
+        }
+      : { score, rationale: first.rationale };
   }
 
   const scores = verdicts.map((v) => v.score);

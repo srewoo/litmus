@@ -27,7 +27,11 @@ export function priceFor(model: string): ModelPrice {
 
 export function costForCall(model: string, inputTokens: number, outputTokens: number): number {
   const p = priceFor(model);
-  return (inputTokens / 1000) * p.in + (outputTokens / 1000) * p.out;
+  // Clamp negative token counts to 0 — a negative count is nonsensical and would
+  // otherwise produce a negative (under-reported) cost.
+  const ti = Math.max(0, inputTokens);
+  const to = Math.max(0, outputTokens);
+  return (ti / 1000) * p.in + (to / 1000) * p.out;
 }
 
 export interface EstimateInput {
@@ -64,7 +68,11 @@ function roundUsd(n: number): number {
 }
 
 export function estimateRun(input: EstimateInput): CostEstimate {
-  const { caseCount, avgInputTokens: ti, avgOutputTokens: to } = input;
+  // Clamp negative counts to 0 so a bad input can never under-report calls/cost
+  // or weaken the spend cap.
+  const caseCount = Math.max(0, input.caseCount);
+  const ti = Math.max(0, input.avgInputTokens);
+  const to = Math.max(0, input.avgOutputTokens);
   let calls = 0;
   let usd = 0;
 

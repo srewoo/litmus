@@ -44,6 +44,14 @@ export class SessionTabStore implements PersistentStore {
   /** Memoized key so every op in a panel session targets the same tab namespace. */
   private keyPromise: Promise<string> | null = null;
 
+  /**
+   * Tail of the mutation queue. Every read-modify-write op chains onto this so
+   * its read sees the prior write's result — without serialization, concurrent
+   * putVersion/putRun (the run loop drives up to 8 in flight) read the same blob
+   * and the last write clobbers the others, losing saved runs/versions (P0).
+   */
+  private mutationTail: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly area: StorageArea,
     private readonly resolveKey: () => Promise<string>,
@@ -51,6 +59,20 @@ export class SessionTabStore implements PersistentStore {
 
   private key(): Promise<string> {
     return (this.keyPromise ??= this.resolveKey());
+  }
+
+  /**
+   * Run `op` after all previously-queued mutations complete. The tail is
+   * advanced to a promise that resolves regardless of `op`'s outcome, so one
+   * failing op never permanently breaks the chain for subsequent callers.
+   */
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.mutationTail.then(op, op);
+    this.mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private async read(): Promise<VersionBlob> {
@@ -74,10 +96,12 @@ export class SessionTabStore implements PersistentStore {
   }
 
   async putVersion(version: PromptVersion): Promise<void> {
-    const blob = await this.read();
-    const versions = blob.versions.filter((v) => v.id !== version.id);
-    versions.push(version);
-    await this.write({ versions, runs: blob.runs });
+    await this.enqueue(async () => {
+      const blob = await this.read();
+      const versions = blob.versions.filter((v) => v.id !== version.id);
+      versions.push(version);
+      await this.write({ versions, runs: blob.runs });
+    });
   }
 
   async getRun(versionId: string): Promise<RunRecord | null> {
@@ -86,7 +110,9 @@ export class SessionTabStore implements PersistentStore {
   }
 
   async putRun(record: RunRecord): Promise<void> {
-    const blob = await this.read();
-    await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
+    await this.enqueue(async () => {
+      const blob = await this.read();
+      await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
+    });
   }
 }

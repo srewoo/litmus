@@ -47,6 +47,7 @@ import {
   fixesListHtml,
   versionsTimelineHtml,
   axisRowsHtml,
+  axisHeaderHtml,
   coverageHtml,
   rubricHealthHtml,
   builderLogHtml,
@@ -102,6 +103,8 @@ interface AppState {
   activeDimension: string;
   /** What the user is testing: prompt output quality, or tool/agent behavior. */
   mode: 'quality' | 'tools';
+  /** Selected output-type pack. Only 'text' is live today; image/voice/video are roadmap. */
+  outputType: 'text' | 'image' | 'voice' | 'video';
   cases: EvalCase[];
   /** Tool catalog (ADR 0001) sent to the target for tool-test cases. */
   tools: ToolDef[];
@@ -119,6 +122,7 @@ const state: AppState = {
   rubrics: {},
   activeDimension: '',
   mode: 'quality',
+  outputType: 'text',
   cases: [],
   tools: [],
   outcome: null,
@@ -172,6 +176,7 @@ async function restoreSession(): Promise<void> {
   state.cases = snap.cases;
   state.tools = snap.tools ?? [];
   if (snap.mode) setMode(snap.mode);
+  applyOutputType();
   suiteKey = snap.suiteKey;
   casesKey = snap.casesKey;
   (el('prompt') as HTMLTextAreaElement).value = snap.prompt;
@@ -254,10 +259,20 @@ const html = (id: string, markup: string): void => {
 function show(step: View): void {
   for (const s of VIEWS) el(`view-${s}`).classList.toggle('hidden', s !== step);
   // The rail tracks the test pipeline only; off-pipeline views (generate) clear it.
-  const rail = el('rail').children;
+  const railEl = el('rail');
+  const rail = railEl.children;
   const idx = (STEPS as readonly string[]).indexOf(step);
   for (let i = 0; i < rail.length; i++) {
     (rail[i] as HTMLElement).className = i < idx ? 'done' : i === idx ? 'now' : '';
+  }
+  // Expose pipeline position to assistive tech (the rail is otherwise color-only).
+  if (idx >= 0) railEl.setAttribute('aria-valuenow', String(idx + 1));
+  // Move focus to the new view's heading so keyboard/screen-reader users aren't
+  // stranded on a now-hidden control and the screen change is announced.
+  const heading = document.querySelector<HTMLElement>(`#view-${step} .h-lead`);
+  if (heading) {
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: false });
   }
 }
 
@@ -287,7 +302,14 @@ async function refreshKeyState(): Promise<void> {
   const provider = currentProvider();
   const settings = await loadSettings(area);
   const hasKey = Boolean(settings.keys[provider]);
-  el('keybox').classList.toggle('hidden', hasKey);
+  // First-run activation: if NO provider has a key, lead with a clear "add a key
+  // to start" card that deep-links into Settings, instead of letting the user
+  // discover the requirement only by clicking a primary button that then fails.
+  const hasAnyKey = (['openai', 'anthropic', 'google'] as ProviderId[]).some((p) => Boolean(settings.keys[p]));
+  el('nokeyCard').classList.toggle('hidden', hasAnyKey);
+  // The per-provider inline key box still appears when the selected provider
+  // lacks a key but another one is set (so the card isn't shown).
+  el('keybox').classList.toggle('hidden', hasKey || !hasAnyKey);
   el('keyLabel').textContent = `Your ${provider} key (stored only in this browser)`;
   el('keyStatus').textContent = hasKey ? `${provider} key saved` : '';
 }
@@ -389,6 +411,9 @@ function setMode(mode: 'quality' | 'tools'): void {
   el('modeTools').setAttribute('aria-pressed', String(mode === 'tools'));
   el('modeMcp').setAttribute('aria-pressed', 'false');
   el('analyzeBtn').textContent = mode === 'tools' ? 'Set up tool & agent tests →' : 'Analyze prompt →';
+  // The express "Just run it" path is a quality-mode shortcut (it auto-generates
+  // rubrics + cases); tool/agent suites are authored by hand, so hide it there.
+  el('quickRunRow').classList.toggle('hidden', mode !== 'quality');
   persistSession();
 }
 
@@ -404,6 +429,60 @@ function onMcpMode(): void {
 function onCapturePrimary(): void {
   if (state.mode === 'tools') void onToToolTests();
   else void onAnalyze();
+}
+
+const EXAMPLE_PROMPT =
+  'You are a support-triage assistant. Classify each ticket into Billing, Bug, How-to, or Account. Return JSON with category, urgency (1-5), and a short reason.';
+
+/** Fill the editor with a ready-made example so a first-run user can try the loop. */
+function onLoadExample(): void {
+  const ta = el('prompt') as HTMLTextAreaElement;
+  ta.value = EXAMPLE_PROMPT;
+  state.prompt = EXAMPLE_PROMPT;
+  persistSession();
+  setMessage('Loaded an example prompt — edit it or run it as-is.');
+  ta.focus();
+}
+
+/**
+ * Express path (quality mode): auto-generate the eval suite + cases silently and
+ * go straight to the run, collapsing the 8-step pipeline to one click. The
+ * detailed Analyze / Eval-prompts / Coverage screens remain available as
+ * "tune this" drill-downs; this is the fast lane to a first score.
+ */
+async function onQuickRun(): Promise<void> {
+  setMessage('');
+  state.prompt = (el('prompt') as HTMLTextAreaElement).value.trim();
+  if (!state.prompt) return setMessage('Paste or load a prompt first.', 'error');
+  let ctx;
+  try {
+    ctx = await wiring();
+  } catch (e) {
+    el('nokeyCard').classList.remove('hidden');
+    return setMessage(e instanceof Error ? e.message : 'Add an API key in Settings to start.', 'info');
+  }
+  state.target = ctx.target;
+  show('run');
+  el('runStatus').textContent = 'Auto-generating evaluation…';
+  el('runProgress').textContent = '';
+  try {
+    const key = sessionKey(ctx);
+    if (suiteKey !== key || Object.keys(state.rubrics).length === 0) {
+      const suite = await generateEvalSuite(state.prompt, suiteDeps(ctx), undefined, (dim, i, t) =>
+        (el('runStatus').textContent = `Writing rubric ${i}/${t}: ${dim}…`),
+      );
+      state.dimensions = suite.dimensions;
+      state.rubrics = suite.rubrics;
+      suiteKey = key;
+    }
+    el('runStatus').textContent = 'Generating test cases…';
+    await ensureCases(false);
+    persistSession();
+    await onRun();
+  } catch (err) {
+    setMessage(describeError(err), 'error');
+    show('capture');
+  }
 }
 
 /** Tool/agent mode: capture prompt + target, then go straight to Cases (no rubric steps). */
@@ -993,6 +1072,15 @@ async function onAddScenario(): Promise<void> {
   setMessage(`Added agent scenario — ${state.cases.length} cases total.`);
 }
 
+// Active run's abort controller, so the Cancel button can halt an in-flight run
+// (providers honor the signal mid-stream). Null when no run is in progress.
+let runAbort: AbortController | null = null;
+
+function onCancelRun(): void {
+  runAbort?.abort();
+  el('runStatus').textContent = 'Canceling…';
+}
+
 async function onRun(): Promise<void> {
   setMessage('');
   if (state.cases.length === 0) {
@@ -1002,9 +1090,13 @@ async function onRun(): Promise<void> {
     );
   }
   show('run');
+  const ac = new AbortController();
+  runAbort = ac;
+  const total = state.cases.length;
+  el('runProgress').textContent = `0 / ${total} cases`;
   try {
     const { settings, target, w } = await wiring();
-    el('runStatus').textContent = `Running ${state.cases.length} cases on ${target.model}…`;
+    el('runStatus').textContent = `Running ${total} cases on ${target.model}…`;
     const outcome = await runEval(state.prompt, state.cases, {
       target,
       targetProvider: w.targetProvider,
@@ -1017,6 +1109,10 @@ async function onRun(): Promise<void> {
       samples: settings.samples,
       judgeSamples: settings.judgeSamples,
       concurrency: settings.concurrency,
+      signal: ac.signal,
+      onProgress: (done, t) => {
+        el('runProgress').textContent = `${done} / ${t} cases`;
+      },
       ...(state.tools.length ? { tools: state.tools } : {}),
       ...(settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}),
     });
@@ -1075,8 +1171,14 @@ async function onRun(): Promise<void> {
     renderResults(version.index);
     show('results');
   } catch (err) {
-    setMessage(describeError(err), 'error');
+    if (ac.signal.aborted) {
+      setMessage('Run canceled — no version saved.');
+    } else {
+      setMessage(describeError(err), 'error');
+    }
     show('cases');
+  } finally {
+    if (runAbort === ac) runAbort = null;
   }
 }
 
@@ -1233,7 +1335,7 @@ function renderAxisPair(): void {
     { label: `v${a.index}`, promptText: a.text, ...(a.target ? { model: a.target.model } : {}) },
     { label: `v${b.index}`, promptText: b.text, ...(b.target ? { model: b.target.model } : {}) },
   );
-  el('axisHeader').textContent = cmp.header;
+  el('axisHeader').innerHTML = axisHeaderHtml(cmp.header);
   el('axisKeyA').textContent = `◀ v${a.index}`;
   el('axisKeyB').textContent = `v${b.index} ▶`;
   html('axisHost', axisRowsHtml(buildAxis(aDims, bDims)));
@@ -1390,6 +1492,46 @@ async function openSettings(): Promise<void> {
   (el('concurrency') as HTMLInputElement).value = String(s.concurrency);
   setSettingsMsg('');
   el('settingsModal').classList.remove('hidden');
+  // A11y: focus the first field so keyboard users land inside the dialog (not on
+  // the gear behind the overlay); remember the opener to restore focus on close.
+  settingsOpener = (document.activeElement as HTMLElement | null) ?? null;
+  (el('keyOpenai') as HTMLInputElement).focus();
+}
+
+// The element focus was on when Settings opened, so we can restore it on close.
+let settingsOpener: HTMLElement | null = null;
+
+function closeSettings(): void {
+  el('settingsModal').classList.add('hidden');
+  settingsOpener?.focus?.();
+  settingsOpener = null;
+}
+
+/** Trap Tab within the dialog and close on Escape (focus-trap for the modal). */
+function onSettingsKeydown(e: KeyboardEvent): void {
+  if (el('settingsModal').classList.contains('hidden')) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeSettings();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const focusables = Array.from(
+    el('settingsModal').querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((n) => n.offsetParent !== null);
+  if (focusables.length === 0) return;
+  const first = focusables[0]!;
+  const last = focusables[focusables.length - 1]!;
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 async function onSaveSettings(): Promise<void> {
@@ -1425,7 +1567,7 @@ async function onSaveSettings(): Promise<void> {
     targetSel.value = defaultValue(next);
     state.target = parseTarget(targetSel.value || DEFAULT_TARGET_VALUE);
     await refreshKeyState();
-    el('settingsModal').classList.add('hidden');
+    closeSettings();
     setMessage('Settings saved.');
   } catch (err) {
     setSettingsMsg(err instanceof Error ? err.message : 'Could not save settings.', 'error');
@@ -1472,11 +1614,28 @@ async function applyDefaults(): Promise<void> {
   await refreshKeyState();
 }
 
+const OUTPUT_TYPES = ['text', 'image', 'voice', 'video'] as const;
+
+function isOutputType(v: string): v is AppState['outputType'] {
+  return (OUTPUT_TYPES as readonly string[]).includes(v);
+}
+
+/** Reflect `state.outputType` into the pressed chip (the read path for the selection). */
+function applyOutputType(): void {
+  for (const c of Array.from(el('packs').children)) {
+    c.setAttribute('aria-pressed', String(c.getAttribute('data-pack') === state.outputType));
+  }
+}
+
 function wirePacks(): void {
   el('packs').addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest('.chip') as HTMLButtonElement | null;
     if (!btn || btn.disabled) return;
-    for (const c of Array.from(el('packs').children)) c.setAttribute('aria-pressed', String(c === btn));
+    // Consume the selection into state (previously this control was write-only:
+    // it toggled aria-pressed but no code ever read the chosen pack).
+    const pack = btn.getAttribute('data-pack') ?? 'text';
+    if (isOutputType(pack)) state.outputType = pack;
+    applyOutputType();
   });
 }
 
@@ -1484,13 +1643,16 @@ function init(): void {
   wirePacks();
   el('analyzeBtn').addEventListener('click', () => onCapturePrimary());
   el('modeQuality').addEventListener('click', () => setMode('quality'));
-  // Tool & agent and MCP are direct-entry modes: clicking the chip jumps straight
-  // to their screen (Output quality stays on capture for the prompt → analyze flow).
-  el('modeTools').addEventListener('click', () => {
-    setMode('tools');
-    void onToToolTests();
-  });
+  // Quality and Tool & agent are both selected on Capture and proceed via the
+  // primary button — clicking the chip only switches mode (and relabels the CTA),
+  // it no longer teleports the user mid-explore. MCP is a genuinely separate
+  // off-pipeline screen, so its chip still navigates.
+  el('modeTools').addEventListener('click', () => setMode('tools'));
   el('modeMcp').addEventListener('click', () => onMcpMode());
+  el('loadExampleBtn').addEventListener('click', () => onLoadExample());
+  el('nokeyOpenSettings').addEventListener('click', () => void openSettings());
+  el('quickRunBtn').addEventListener('click', () => void onQuickRun());
+  el('runCancelBtn').addEventListener('click', () => onCancelRun());
   el('grabBtn').addEventListener('click', () => void onGrab());
   el('buildBtn').addEventListener('click', () => openBuilder());
   el('builderBackBtn').addEventListener('click', () => show('capture'));
@@ -1515,7 +1677,8 @@ function init(): void {
   el('versionPicker').addEventListener('change', () => onPickVersion());
   el('saveKey').addEventListener('click', () => void onSaveKey());
   el('settingsBtn').addEventListener('click', () => void openSettings());
-  el('settingsClose').addEventListener('click', () => el('settingsModal').classList.add('hidden'));
+  el('settingsClose').addEventListener('click', () => closeSettings());
+  el('settingsModal').addEventListener('keydown', (e) => onSettingsKeydown(e as KeyboardEvent));
   el('saveSettings').addEventListener('click', () => void onSaveSettings());
   el('deleteKeys').addEventListener('click', () => void onDeleteKeys());
   el('loadModels').addEventListener('click', () => void onLoadModels());

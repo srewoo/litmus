@@ -12,7 +12,11 @@ export async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const n = items.length;
   const results = new Array<R>(n);
-  const cap = Math.max(1, Math.floor(limit));
+  // A NaN limit would make `Math.min(cap, n)` NaN → zero workers → the map
+  // silently returns a sparse array of holes. Guard it to sequential. A finite
+  // limit is floored to >= 1; Infinity is preserved (capped to `n` below = run
+  // all at once), which is its intended "unbounded" meaning.
+  const cap = Number.isNaN(limit) ? 1 : Math.max(1, Math.floor(limit));
   let next = 0;
 
   async function worker(): Promise<void> {
