@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "litmus — System Prompt Tester",
-  "version": "1.1.0",
+  "version": "1.2",
   "description": "Test, analyze, and version system prompts against the LLM you ship on. BYOK, local-first, no backend.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -16,15 +16,26 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https: http:; object-src 'none'; base-uri 'none'"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["sidePanel", "storage", "activeTab", "scripting"],
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
   "host_permissions": [
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*"
   ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"]
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
 }

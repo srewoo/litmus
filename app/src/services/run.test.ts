@@ -50,6 +50,33 @@ describe('runEval', () => {
     expect(summary.overall).toBe(6); // mean(9,3)
   });
 
+  it('should reject (not resolve with partial results) when the signal is already aborted', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(runEval('SYS', cases, { ...baseDeps, signal: ac.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+
+  it('should stop issuing calls once cancelled mid-run', async () => {
+    const ac = new AbortController();
+    let targetCalls = 0;
+    const cancelAfterFirst: Provider = {
+      id: 'openai',
+      async chat(req: ChatRequest) {
+        targetCalls++;
+        ac.abort(); // user hits Cancel during the first case
+        return { text: `out:${req.messages.find((m) => m.role === 'user')?.content ?? ''}`, timing };
+      },
+    };
+    // Sequential (concurrency 1) so the second case would only start after the
+    // first returns — the abort gate must prevent that second target call.
+    await expect(
+      runEval('SYS', cases, { ...baseDeps, targetProvider: cancelAfterFirst, signal: ac.signal, concurrency: 1 }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(targetCalls).toBe(1); // second case never dispatched
+  });
+
   it('should record a failed case without aborting the run', async () => {
     const flaky: Provider = {
       id: 'openai',

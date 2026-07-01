@@ -116,6 +116,36 @@ describe('OpenAIProvider.chat', () => {
     );
     expect(captured!.body).toContain('"model":"o3"');
     expect(captured!.body).not.toContain('temperature');
+    // Reasoning models reject max_tokens; must use max_completion_tokens instead.
+    expect(captured!.body).toContain('"max_completion_tokens":16000');
+    expect(captured!.body).not.toContain('"max_tokens"');
+  });
+
+  it('should send max_tokens with the shared default for non-reasoning models', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return { ok: true, status: 200, body: streamFrom(['data: [DONE]\n']), text: async () => '' };
+    };
+    await new OpenAIProvider().chat(
+      { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] },
+      { apiKey: 'sk', fetchImpl, clock: fakeClock([1, 2]) },
+    );
+    expect(captured!.body).toContain('"max_tokens":16000');
+    expect(captured!.body).not.toContain('max_completion_tokens');
+  });
+
+  it('should honour an explicit maxTokens over the default', async () => {
+    let captured: FetchInit | null = null;
+    const fetchImpl = async (_url: string, init: FetchInit): Promise<FetchResponse> => {
+      captured = init;
+      return { ok: true, status: 200, body: streamFrom(['data: [DONE]\n']), text: async () => '' };
+    };
+    await new OpenAIProvider().chat(
+      { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }], maxTokens: 256 },
+      { apiKey: 'sk', fetchImpl, clock: fakeClock([1, 2]) },
+    );
+    expect(captured!.body).toContain('"max_tokens":256');
   });
 
   it('should include the model id in a ProviderError', async () => {

@@ -1,19 +1,47 @@
 /**
- * Per-model capability quirks. Reasoning models (OpenAI o-series, reasoning
- * variants) reject the `temperature` parameter, so we omit it for them. We also
- * filter a raw model list down to chat-capable models (a /v1/models list includes
- * embeddings, TTS, image, etc. that 400 on chat completions).
+ * Per-model capability quirks. The posture here is FAIL-OPEN: unknown or newer
+ * model ids (including BYOK custom / fine-tuned ids the patterns never
+ * anticipated) are assumed capable, and we only deny the families *known* to be
+ * incapable via per-provider denylists. This lets the provider surface a real
+ * 400 for a genuinely-unsupported id rather than pre-emptively refusing a model
+ * that actually works. Reasoning models (OpenAI o-series, GPT-5 family) reject a
+ * custom `temperature`, so we omit it for them. We also filter a raw model list
+ * down to chat-capable models (a /v1/models list includes embeddings, TTS,
+ * image, etc. that 400 on chat completions).
  */
 import type { ProviderId } from '../shared/types';
 
 /**
- * Whether to send `temperature` for this model. OpenAI's GPT-5 family and
- * o-series reasoning models only accept the default (1) and 400 on a custom
- * value, so we allowlist the families known to accept it and omit otherwise.
+ * Whether to send `temperature` for this model. Fail-open: send temperature by
+ * default, including for unknown / newer ids and fine-tune ids (`ft:gpt-4o:...`).
+ * Only OMIT it for the OpenAI families known to reject a custom value — the
+ * o-series and the gpt-5 reasoning families, which only accept the default (1)
+ * and 400 otherwise.
  */
+const OPENAI_NO_TEMPERATURE = /^(o\d|gpt-5)/i;
+
 export function supportsTemperature(provider: ProviderId, model: string): boolean {
-  if (provider === 'openai') return /^(gpt-4|gpt-3\.5|chatgpt-4)/i.test(model);
+  if (provider === 'openai') return !OPENAI_NO_TEMPERATURE.test(model);
   return true;
+}
+
+/**
+ * OpenAI reasoning families (o-series, gpt-5) reject the legacy `max_tokens`
+ * field and require `max_completion_tokens` instead — the same families that
+ * reject a custom `temperature`. Kept as a SEPARATE predicate/regex from
+ * temperature handling so the two can diverge independently as the API evolves.
+ */
+const OPENAI_MAX_COMPLETION_TOKENS = /^(o\d|gpt-5)/i;
+
+/**
+ * The request field an OpenAI-shaped API expects for the output-token limit.
+ * Fail-open: default to the widely-accepted `max_tokens`, and only switch to
+ * `max_completion_tokens` for the OpenAI reasoning families known to reject
+ * `max_tokens` with a 400.
+ */
+export function maxTokensField(provider: ProviderId, model: string): 'max_tokens' | 'max_completion_tokens' {
+  if (provider === 'openai' && OPENAI_MAX_COMPLETION_TOKENS.test(model)) return 'max_completion_tokens';
+  return 'max_tokens';
 }
 
 const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search|babbage|davinci)/i;
@@ -25,28 +53,33 @@ export function isChatModel(provider: ProviderId, model: string): boolean {
 }
 
 /**
- * Whether a model accepts the `tools` / function-calling parameter. Conservative
- * per current model families:
- *  - OpenAI: gpt-4 / gpt-4o / gpt-4.1 / o-series / gpt-5 all support tools, and
- *    gpt-3.5-turbo supports tools. Non-chat models (embeddings, TTS, ...) do not.
- *  - Anthropic: claude-3 and newer (claude-3, claude-3.5, claude-4, ...) support tools.
- *  - Google: gemini-1.5 and the 2.x line (and newer) support tools.
+ * Whether a model accepts the `tools` / function-calling parameter. Fail-open:
+ * assume capable by default — including unknown / newer ids and BYOK custom /
+ * fine-tuned ids — and only deny the families *known* not to support tools, so a
+ * genuinely-unsupported id surfaces a real provider 400 rather than being
+ * refused pre-emptively. Known-incapable denylists:
+ *  - OpenAI: non-chat models (embeddings, TTS, whisper, ...) and the legacy
+ *    gpt-3.5 base / -instruct models (only gpt-3.5-turbo supports tools).
+ *  - Anthropic: claude-2 / claude-instant predate tool use.
+ *  - Google: gemini-1.0 and pro-vision predate function calling.
  */
 export function supportsTools(provider: ProviderId, model: string): boolean {
   if (provider === 'openai') {
     if (!isChatModel('openai', model)) return false;
     // gpt-3.5-turbo supports tools, but the legacy gpt-3.5 base/instruct models do not.
     if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
-    return /^(gpt-4|gpt-5|chatgpt-4|o\d)/i.test(model);
+    return true;
   }
   if (provider === 'anthropic') {
     // Tool use shipped with claude-3; claude-2 / claude-instant predate it.
-    return /claude-(3|4|opus-4|sonnet-4|haiku-4|[5-9])/i.test(model);
+    if (/claude-(2|instant)/i.test(model)) return false;
+    return true;
   }
   if (provider === 'google') {
     // gemini-1.5 and the 2.x+ families support function calling; gemini-1.0/pro-vision do not.
-    if (/gemini-1\.0/i.test(model)) return false;
-    return /gemini-(1\.5|[2-9])/i.test(model);
+    if (/gemini-1\.0|pro-vision/i.test(model)) return false;
+    return true;
   }
-  return false;
+  // Unknown / BYOK provider: assume capable and let the provider reject it.
+  return true;
 }

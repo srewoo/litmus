@@ -2,13 +2,14 @@
   --ground:#ECEFF3;--surface:#FFFFFF;--surface-2:#F3F6F9;--surface-3:#E9EEF3;
   /* a11y: darkened for WCAG AA (4.5:1) on light surfaces (--surface #FFF .. --surface-3 #E9EEF3).
      --muted: #5E6B7A -> #54616F (was ~5.0:1 on --surface-3, now ~5.5:1).
-     --faint: #93A0AE -> #5D6A78 (was ~2.7:1 on --surface, failing; now ~5.5:1 on --surface, >=4.7:1 on all light surfaces).
+     --faint: #93A0AE -> #5D6A78 -> #525E6B (was ~2.7:1 on --surface; #5D6A78 was ~4.3-4.7:1 on the tinted --surface-3 #E9EEF3,
+       too close to the 4.5:1 floor; #525E6B is ~5.67:1 on --surface-3, ~6.62:1 on --surface, ~6.1:1 on --surface-2 — clears AA on every light surface while staying clearly lighter than --text).
      Note: --coral (#E5604A) as text is ~3.0-3.4:1 on these surfaces and does NOT clear 4.5:1 — left unchanged to preserve the brand,
      which is why low/fail states also carry the non-color cues added below (.cell.lo underline+weight, .bar-lo hatch). */
-  --line:#DCE3EA;--line-soft:#E8EDF2;--text:#16202B;--muted:#54616F;--faint:#5D6A78;
+  --line:#DCE3EA;--line-soft:#E8EDF2;--text:#16202B;--muted:#54616F;--faint:#525E6B;
   --teal:#0FA98E;--teal-bright:#17C6A6;--teal-dim:rgba(15,169,142,.12);--teal-line:rgba(15,169,142,.34);
   --coral:#E5604A;--coral-bright:#FF7257;--coral-dim:rgba(229,96,74,.11);--coral-line:rgba(229,96,74,.34);
-  --amber:#C6841A;--amber-bright:#E8A33A;
+  --amber:#9A6B00;--amber-bright:#E8A33A;--amber-dim:rgba(198,132,26,.12);--amber-line:rgba(198,132,26,.34);
   --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
 }
@@ -153,6 +154,11 @@ textarea.field{min-height:120px}
 .cell.ok{color:var(--teal)}
 /* a11y: non-color cue so red/green-colorblind users can tell low from high. */
 .cell.lo{color:var(--coral);font-weight:700;text-decoration:underline dotted;text-underline-offset:2px}
+/* a11y: borderline/mid band — amber, distinct from .ok (teal) and .lo (coral).
+   Non-color cue is a leading "~" marker (vs .lo's dotted underline) so colorblind
+   users can distinguish mid from both pass and fail. */
+.cell.mid{color:var(--amber);font-weight:700}
+.cell.mid::before{content:"~";margin-right:2px;font-weight:700;opacity:.85}
 .cell .spread{display:block;font-family:var(--mono);font-size:8.5px;font-weight:600;color:var(--faint);margin-top:1px}
 .pf.p{color:var(--teal)}.pf.f{color:var(--coral)}
 
@@ -241,6 +247,10 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 .rubrichealth{font-family:var(--mono);font-size:11px;margin:8px 0;padding:8px 11px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted)}
 .rubrichealth.ok{border-color:var(--teal-line);background:var(--teal-dim);color:#0c6e5c}
 .rubrichealth.warn{border-color:var(--amber-line);background:var(--amber-dim);color:#7a5410}
+/* rubric-health inline spans (emitted by views.ts). Kept inline + wrapping so
+   they read cleanly in the narrow column; inherit the container's state color. */
+.rh-summary{font-weight:600}
+.rh-disc,.rh-cons{color:var(--muted);font-weight:400;margin-left:8px;white-space:nowrap}
 
 .hidden{display:none}
 .foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-top:1px solid var(--line-soft);font-family:var(--mono);font-size:10.5px;color:var(--faint)}
@@ -311,7 +321,7 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 .mcp-edit{font:inherit;font-size:10.5px;color:var(--teal);background:none;border:none;cursor:pointer;text-decoration:underline;min-height:24px;padding:4px 6px;display:inline-flex;align-items:center}
 .mcptabs{display:flex;gap:4px;margin:12px 0 8px}
 .mcptab{flex:1;font:inherit;font-size:11px;padding:6px 4px;border-radius:7px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);cursor:pointer}
-.mcptab[aria-pressed="true"]{border-color:var(--teal-line);background:var(--teal-dim);color:var(--teal);font-weight:600}
+.mcptab[aria-selected="true"],.mcptab[aria-pressed="true"]{border-color:var(--teal-line);background:var(--teal-dim);color:var(--teal);font-weight:600}
 .mcp-disc{margin-top:8px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:0 10px}
 .mcp-disc summary{cursor:pointer;font-size:11.5px;padding:8px 0;font-family:var(--mono)}
 .mcp-form{margin-top:6px}
@@ -364,3 +374,8 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 
 /* ---- Shared: inline glossary term (hover for definition) ---- */
 .term{border-bottom:1px dotted var(--faint);cursor:help}
+/* a11y: views.ts adds tabindex="0", so keyboard/touch users need a focus
+   affordance — title= alone is mouse-only. Keep the dotted underline; add a
+   visible focus ring and a hover cue. */
+.term:hover{border-bottom-color:var(--text)}
+.term:focus,.term:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:2px;border-bottom-color:var(--text)}

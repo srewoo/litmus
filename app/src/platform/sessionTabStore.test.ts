@@ -54,6 +54,35 @@ describe('SessionTabStore', () => {
     expect(await store.getRun('v1')).toBeNull();
   });
 
+  it('appendVersion should allocate distinct sequential indexes under concurrent calls', async () => {
+    const store = storeFor(new InMemoryStorageArea(), 1);
+    // Fire 4 appends without awaiting between them — the mutation queue must
+    // serialize the read→allocate→write so no two share an index/id.
+    const built = await Promise.all(
+      Array.from({ length: 4 }, () => store.appendVersion((index) => version(`v${index}`, index))),
+    );
+    expect(built.map((v) => v.index).sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+    const stored = await store.getVersions();
+    expect(stored.map((v) => v.id)).toEqual(['v1', 'v2', 'v3', 'v4']);
+  });
+
+  it('should stamp the schema version on every write (ADR 0004)', async () => {
+    const area = new InMemoryStorageArea();
+    const store = storeFor(area, 1);
+    await store.putVersion(version('v1', 1));
+    const blob = area.store.get(versionKeyForTab(1)) as { schemaVersion?: number };
+    expect(blob.schemaVersion).toBe(1);
+  });
+
+  it('should tolerantly read a legacy blob that has no schemaVersion (no data loss)', async () => {
+    const area = new InMemoryStorageArea();
+    // Simulate data written by a pre-ADR-0004 build: versions/runs, no schemaVersion.
+    await area.set({ [versionKeyForTab(1)]: { versions: [version('v1', 1)], runs: { v1: run('v1', 8) } } });
+    const store = storeFor(area, 1);
+    expect(await store.getVersions()).toHaveLength(1);
+    expect((await store.getRun('v1'))?.summary.overall).toBe(8);
+  });
+
   it('should persist versions and runs and sort versions by index', async () => {
     const store = storeFor(new InMemoryStorageArea(), 1);
     await store.putVersion(version('v2', 2));

@@ -2,6 +2,16 @@
 import type { ProviderId, Timing, ToolCall, ToolDef } from '../shared/types';
 import type { Clock } from '../core/stream';
 
+/**
+ * Default output-token cap applied when a request leaves `maxTokens` unset.
+ * Applied UNIFORMLY across every provider adapter so cross-provider quality and
+ * latency comparisons aren't skewed by hidden per-provider ceilings (Anthropic
+ * requires the field and previously defaulted to 1024, truncating long
+ * generations; OpenAI/Google left it unset). Kept high enough not to clip
+ * realistic system-prompt outputs.
+ */
+export const DEFAULT_MAX_TOKENS = 16000;
+
 export interface ChatMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string;

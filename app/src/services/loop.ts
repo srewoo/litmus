@@ -89,16 +89,16 @@ export async function runLoopPass(input: PassInput, deps: LoopDeps): Promise<Pas
     signal: deps.signal,
   });
 
-  const index = (await deps.store.getVersions()).length + 1;
-  const version: PromptVersion = {
+  // Atomic index allocation + persist (see PersistentStore.appendVersion) so
+  // concurrent passes can't collide on the same version index/id.
+  const version = await deps.store.appendVersion((index) => ({
     id: deps.makeVersionId(index),
     index,
     text: input.systemPrompt,
     note: input.note,
     parentId: input.parentId ?? null,
     createdAt: deps.now,
-  };
-  await deps.store.putVersion(version);
+  }));
   await deps.store.putRun({
     versionId: version.id,
     summary: outcome.summary,

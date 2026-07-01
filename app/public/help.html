@@ -169,6 +169,23 @@
       <p>Tests a model that uses tools across several turns to finish a task. In the 🤖 Agent scenarios panel, paste a scenario as JSON: a <code>goal</code>, the <code>tools</code> it may call (each with <i>scripted</i> <code>results</code> — you can inject a failure to test recovery), a <code>maxSteps</code> cap, and optional <code>successContains</code> keywords the final answer must include. litmus runs the model in a loop — tool call → mocked result → continue — and scores whether it reached the goal using only the tools you defined.</p>
       <p><b>Tools are mocked.</b> litmus never executes a real tool; it returns the responses you scripted, so runs are deterministic and side-effect-free. Both tool tests and agent scenarios work with OpenAI, Anthropic, and Google targets (litmus normalizes each provider's tool-call format). Richer per-dimension trajectory scoring (efficiency, recovery) is planned; today's agent verdict is goal-reached plus correct tool selection.</p>
 
+      <h2>Testing a live MCP server <span style="font-size:11px;color:var(--teal);background:var(--teal-dim);border:1px solid var(--teal-line);border-radius:5px;padding:1px 6px;vertical-align:middle">v1.2</span></h2>
+      <p>If you're building an <b>MCP (Model Context Protocol) server</b>, litmus can connect to it directly and exercise it end to end — no system prompt or rubric needed. On the <b>Capture</b> step, under <b>"What are you testing?"</b>, pick the <b>MCP server</b> chip. You'll enter the server's URL, connect, and then inspect and test what it exposes.</p>
+
+      <h3>🔌 Connect</h3>
+      <p>Enter the server's endpoint and connect. litmus first asks your browser for <b>host permission</b> for that server's origin — this is granted <i>per origin</i> and stored locally, so you approve each new server once. An <b>auth header is optional</b>: add one (for example a bearer token) if your server requires it, or leave it blank for open servers.</p>
+
+      <h3>🧭 Inspect</h3>
+      <p>Once connected, litmus lists the server's <b>tools, resources, and prompts</b> so you can see exactly what it advertises, with each tool's input schema.</p>
+
+      <h3>✓ Conformance check</h3>
+      <p>Runs a structured pass over the server — checking that it advertises and responds correctly over the protocol, that tool schemas are well-formed, and that listed capabilities behave as declared.</p>
+
+      <h3>🛡 Security scan</h3>
+      <p>An <b>adversarial</b> pass that sends crafted, hostile payloads to the live server — probing for things like prompt-injection openings, argument-injection, and missing input validation — and reports findings by severity.</p>
+
+      <div class="tip" style="background:var(--coral-dim);border-color:var(--coral-line);color:#8c3527"><span>⚠</span><div><b>These are real calls with real side effects.</b> Unlike Agent scenarios (where tools are mocked), MCP mode talks to your <i>live</i> server: every tool call actually runs and can read, write, or delete real data. The <b>security scan</b> deliberately sends adversarial payloads to that live server. Only point litmus at MCP servers you own or control, and prefer a test/staging instance over production.</div></div>
+
       <h2>Tips &amp; shortcuts</h2>
       <div class="tip"><span>＋</span><div><b>Need more coverage?</b> On the Cases step, click <code>+10 cases</code> to append ten fresh cases without losing the ones you have. litmus is told to avoid duplicating existing cases.</div></div>
       <div class="tip"><span>⚡</span><div><b>No wasted calls.</b> The eval prompt and generated cases are cached for your session, so stepping back and forth never re-runs the model. Editing your prompt (including applying fixes) automatically refreshes them.</div></div>
@@ -189,6 +206,9 @@
       </details>
       <details><summary>How are tool tests scored?</summary>
         <p>Deterministically, not by the LLM judge. A tool test passes only if the model called the expected tool, the arguments parsed as JSON and matched the tool's schema (required fields, types), any required values matched, and no forbidden tool was called. Because it's deterministic, a tool test's pass/fail doesn't drift run-to-run the way judged scores can.</p>
+      </details>
+      <details><summary>Does testing an MCP server make real calls?</summary>
+        <p>Yes. Unlike Agent scenarios, where tools are mocked, MCP mode connects to your <i>live</i> server and every tool call runs for real, with real side effects. The security scan goes further and sends adversarial payloads to that live server. Only test servers you own or control, and prefer a staging instance. Connecting requires host permission for the server's origin (granted per origin, stored in this browser); an auth header is optional.</p>
       </details>
     </div>
   </div>

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   esc,
   facetRowsHtml,
+  suggestionsHtml,
   casesListHtml,
   resultsTableHtml,
   caseDetailHtml,
@@ -74,6 +75,23 @@ describe('caseDetailHtml', () => {
 describe('esc', () => {
   it('should escape HTML-significant characters', () => {
     expect(esc('<script>"&')).toBe('&lt;script&gt;&quot;&amp;');
+  });
+});
+
+describe('suggestionsHtml', () => {
+  it('should render each suggestion in its own row', () => {
+    const html = suggestionsHtml(['Tighten the tone', 'Add an output schema']);
+    expect(html).toContain('✦ Tighten the tone');
+    expect(html).toContain('✦ Add an output schema');
+    expect((html.match(/class="sd"/g) ?? []).length).toBe(2);
+  });
+  it('should escape HTML in model-generated suggestions (no injection into the key-holding panel)', () => {
+    const html = suggestionsHtml(['<img src=x onerror="alert(1)">']);
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+  });
+  it('should return an empty string for no suggestions', () => {
+    expect(suggestionsHtml([])).toBe('');
   });
 });
 
@@ -154,6 +172,20 @@ describe('resultsTableHtml', () => {
     // Glyph cue still present in the P/F column.
     expect(html).toContain('pf p');
     expect(html).toContain('pf f');
+  });
+
+  it('should render three distinct score-cell bands so mid scores are not collapsed into ok', () => {
+    const results: CaseResult[] = [
+      { caseId: 'hi', output: '', score: 8.5, passed: true, rationale: 'ok', timing }, // hi band
+      { caseId: 'mid', output: '', score: 6.2, passed: true, rationale: 'ok', timing }, // mid band, still passing
+      { caseId: 'lo', output: '', score: 3.0, passed: false, rationale: 'bad', timing }, // lo band
+    ];
+    const html = resultsTableHtml(results, 6);
+    expect(html).toContain('class="cell ok"'); // 8.5 → hi
+    expect(html).toContain('class="cell mid"'); // 6.2 → mid (distinct, was previously 'ok')
+    expect(html).toContain('class="cell lo"'); // 3.0 → lo
+    // The mid band is driven by band(score), independent of pass/fail.
+    expect(html).toContain('aria-label="score 6.2, passed"');
   });
 });
 
@@ -237,9 +269,20 @@ describe('rubricHealthHtml', () => {
 
   it('should define the coined terms inline with a glossary title', () => {
     const html = rubricHealthHtml(sample);
-    expect(html).toContain('<span class="term" title="How well your scoring rubric separates strong from weak answers.">Rubric health</span>');
+    expect(html).toContain('<span class="term" title="How well your scoring rubric separates strong from weak answers." tabindex="0" role="note" aria-label="How well your scoring rubric separates strong from weak answers.">Rubric health</span>');
     expect(html).toContain('title="Whether the rubric gives clearly different scores to strong vs weak outputs. Higher gap = better separation."');
     expect(html).toContain('title="How stable scores are when the same output is judged repeatedly (lower variation = more consistent)."');
+  });
+
+  it('should make each glossary term keyboard-focusable and announce its definition to AT', () => {
+    const html = rubricHealthHtml(sample);
+    // Three terms: Rubric health, Discrimination, Consistency.
+    const focusable = html.match(/class="term" title="[^"]*" tabindex="0" role="note" aria-label="[^"]*"/g) ?? [];
+    expect(focusable.length).toBe(3);
+    // The definition reaches AT via aria-label, not only the (hover-only) title.
+    expect(html).toContain('aria-label="How well your scoring rubric separates strong from weak answers."');
+    expect(html).toContain('aria-label="Whether the rubric gives clearly different scores to strong vs weak outputs. Higher gap = better separation."');
+    expect(html).toContain('aria-label="How stable scores are when the same output is judged repeatedly (lower variation = more consistent)."');
   });
 });
 
@@ -249,6 +292,14 @@ describe('axisHeaderHtml', () => {
     expect(html).toContain('class="term"');
     expect(html).toContain('By dimension');
     expect(html).toContain('title="What changed between two versions, broken down by quality dimension."');
+  });
+
+  it('should make the term keyboard-focusable and announce its definition to AT', () => {
+    const html = axisHeaderHtml();
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('role="note"');
+    // Definition exposed to AT (not only the hover-only title).
+    expect(html).toContain('aria-label="What changed between two versions, broken down by quality dimension."');
   });
 
   it('should escape a custom label', () => {

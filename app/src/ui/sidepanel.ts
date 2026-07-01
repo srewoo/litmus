@@ -7,7 +7,7 @@ import { loadSettings, setKey, saveSettings, deleteAllKeys } from '../platform/s
 import { chromeLocal, chromeSession } from '../platform/chromeStorage';
 import { loadSnapshot, saveSnapshot } from '../platform/sessionCache';
 import { mergeSettings } from './settingsForm';
-import { SessionTabStore, versionKeyForTab } from '../platform/sessionTabStore';
+import { SessionTabStore, DURABLE_VERSION_KEY } from '../platform/sessionTabStore';
 import { getProvider } from '../providers';
 import { fetchModels } from '../providers/listModels';
 import type { ProviderId } from '../shared/types';
@@ -52,6 +52,7 @@ import {
   rubricHealthHtml,
   builderLogHtml,
   band,
+  suggestionsHtml,
 } from './views';
 import type { VersionVM, BuilderTurnVM } from './views';
 import { initMcpPanel } from './mcpPanel';
@@ -74,25 +75,13 @@ const TOOL_CASE_COUNT = 6;
 const area = chromeLocal();
 const session = chromeSession();
 
-/**
- * Resolve the session-storage key for THIS panel's tab. The per-tab side panel
- * shows the active tab, so the active tab at resolve time is the panel's tab;
- * SessionTabStore memoizes the result so every op in this session uses one key
- * even if the active tab later changes. Falls back to a stable key off-browser
- * (e.g. tests) where chrome.tabs is unavailable.
- */
-async function resolveVersionKey(): Promise<string> {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    return versionKeyForTab(tabs[0]?.id);
-  } catch {
-    return versionKeyForTab(undefined);
-  }
-}
-
-// Version history is per-tab and lives in chrome.storage.session: empty for a
-// tab that hasn't run anything, and cleared when the tab closes (background.js).
-const store = new SessionTabStore(session, resolveVersionKey);
+// Version history is DURABLE (ADR 0004): it lives in chrome.storage.local under
+// one stable namespace, so a user's versions + runs survive tab close and
+// browser restart — the iterative loop (compare v1→vN over time) is the product,
+// and session-scoped history threw it away. The store's mutation queue still
+// serializes the concurrent run-loop writes. (Named/multi-prompt workspaces are a
+// future layer: swap this fixed key for a per-workspace one.)
+const store = new SessionTabStore(area, async () => DURABLE_VERSION_KEY);
 
 interface AppState {
   prompt: string;
@@ -266,7 +255,10 @@ function show(step: View): void {
     (rail[i] as HTMLElement).className = i < idx ? 'done' : i === idx ? 'now' : '';
   }
   // Expose pipeline position to assistive tech (the rail is otherwise color-only).
-  if (idx >= 0) railEl.setAttribute('aria-valuenow', String(idx + 1));
+  if (idx >= 0) {
+    railEl.setAttribute('aria-valuenow', String(idx + 1));
+    railEl.setAttribute('aria-valuetext', `Step ${idx + 1} of ${rail.length}: ${step}`);
+  }
   // Move focus to the new view's heading so keyboard/screen-reader users aren't
   // stranded on a now-hidden control and the screen change is announced.
   const heading = document.querySelector<HTMLElement>(`#view-${step} .h-lead`);
@@ -417,6 +409,38 @@ function setMode(mode: 'quality' | 'tools'): void {
   persistSession();
 }
 
+/**
+ * On-ramp from the MCP inspector into agent testing (ADR 0003): prefill an agent
+ * scenario bound to the live server via `mcpServerId` and drop the user on the
+ * Cases screen with the Agent panel open — so "connect → inspect → test my agent
+ * against the real server" is one flow instead of a dead-end.
+ */
+function onUseMcpInScenario(serverId: string, toolNames: string[]): void {
+  setMode('tools');
+  const scenario = {
+    goal: 'Describe what the agent should accomplish using this server.',
+    maxSteps: 5,
+    successContains: [] as string[],
+    mcpServerId: serverId,
+    tools: [] as unknown[], // tools are discovered live from the server at run time
+  };
+  const ta = el('scenarioJson') as HTMLTextAreaElement;
+  ta.value = JSON.stringify(scenario, null, 2);
+  void (async () => {
+    try {
+      await renderCasesView();
+    } catch {
+      show('cases');
+    }
+    el('toolPanel').classList.add('hidden');
+    el('agentPanel').classList.remove('hidden');
+    (el('agentPanel') as HTMLDetailsElement).open = true;
+    ta.focus();
+  })();
+  const discovered = toolNames.length ? ` ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'} will be discovered live.` : '';
+  setMessage(`Prefilled an agent scenario against "${serverId}" — set the goal + success check, then "+ Add agent scenario".${discovered}`);
+}
+
 /** MCP is an off-pipeline mode: pressing its chip navigates to the MCP view. */
 function onMcpMode(): void {
   el('modeQuality').setAttribute('aria-pressed', 'false');
@@ -458,7 +482,10 @@ async function onQuickRun(): Promise<void> {
   try {
     ctx = await wiring();
   } catch (e) {
-    el('nokeyCard').classList.remove('hidden');
+    // Refresh key state (which shows the no-key card only when truly no key is
+    // set) rather than force-showing it — a transient/parse error shouldn't be
+    // mislabeled as "add a key".
+    await refreshKeyState();
     return setMessage(e instanceof Error ? e.message : 'Add an API key in Settings to start.', 'info');
   }
   state.target = ctx.target;
@@ -478,6 +505,29 @@ async function onQuickRun(): Promise<void> {
     el('runStatus').textContent = 'Generating test cases…';
     await ensureCases(false);
     persistSession();
+    // Honor the spend cap on the express path too (the guided path gates on the
+    // Cases screen, which this skips). Over cap → route to Cases so the user can
+    // trim or raise the cap instead of silently overspending.
+    const samples = Math.max(1, ctx.settings.samples);
+    const est = estimateRun({
+      caseCount: state.cases.length * samples,
+      targetModel: ctx.target.model,
+      judgeModel: ctx.w.auxModel,
+      analyzerModel: ctx.w.auxModel,
+      includeAnalysis: false,
+      includeEvalGen: false,
+      includeFixes: true,
+      judgeSamples: ctx.settings.judgeSamples,
+      avgInputTokens: 600,
+      avgOutputTokens: 400,
+    });
+    if (exceedsCap(est, ctx.settings.spendCapUsd)) {
+      await renderCasesView();
+      return setMessage(
+        `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(ctx.settings.spendCapUsd)} cap — trim cases or raise the cap in Settings, then Run.`,
+        'error',
+      );
+    }
     await onRun();
   } catch (err) {
     setMessage(describeError(err), 'error');
@@ -635,7 +685,7 @@ async function onAnalyze(): Promise<void> {
     });
     el('analyzeKicker').textContent = `How it reads on ${ctx.target.model}`;
     html('facets', facetRowsHtml(state.analysis.facets));
-    html('suggest', state.analysis.suggestions.map((s) => `<div class="sd">✦ ${s}</div>`).join(''));
+    html('suggest', suggestionsHtml(state.analysis.suggestions));
     persistSession();
     show('analyze');
   } catch (err) {
@@ -1133,31 +1183,32 @@ async function onRun(): Promise<void> {
       }).catch(() => null);
     }
 
-    const existing = await store.getVersions();
-    const index = existing.length + 1;
-    const prev = existing[existing.length - 1];
-    // Truthful note: distinguish a prompt edit, a re-run, and a same-prompt model
-    // swap (the model-comparison case) so the timeline tells the right story.
-    const samePrompt = Boolean(prev && prev.text === state.prompt);
-    const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
-    const note =
-      index === 1
-        ? 'baseline'
-        : samePrompt
-          ? modelChanged
-            ? `same prompt · ${target.model}`
-            : 're-run (no change)'
-          : 'edited prompt';
-    const version = {
-      id: `v${index}`,
-      index,
-      text: state.prompt,
-      note,
-      parentId: state.lastVersionId,
-      createdAt: Date.now(),
-      target: { provider: target.provider, model: target.model },
-    };
-    await store.putVersion(version);
+    // Atomic index allocation + persist (PersistentStore.appendVersion): the
+    // note/id are derived from the same snapshot that assigns the index, inside
+    // one critical section, so a version can't get a colliding index/id.
+    const version = await store.appendVersion((index, prev) => {
+      // Truthful note: distinguish a prompt edit, a re-run, and a same-prompt
+      // model swap (the model-comparison case) so the timeline tells the right story.
+      const samePrompt = Boolean(prev && prev.text === state.prompt);
+      const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
+      const note =
+        index === 1
+          ? 'baseline'
+          : samePrompt
+            ? modelChanged
+              ? `same prompt · ${target.model}`
+              : 're-run (no change)'
+            : 'edited prompt';
+      return {
+        id: `v${index}`,
+        index,
+        text: state.prompt,
+        note,
+        parentId: state.lastVersionId,
+        createdAt: Date.now(),
+        target: { provider: target.provider, model: target.model },
+      };
+    });
     await store.putRun({
       versionId: version.id,
       summary: outcome.summary,
@@ -1718,6 +1769,7 @@ function init(): void {
   el('resultsBackBtn').addEventListener('click', () => show('cases'));
   el('fixBtn').addEventListener('click', () => void onFixes());
   el('resultsVersionsBtn').addEventListener('click', () => void showVersions('results'));
+  el('resultsExportBtn').addEventListener('click', () => void exportReport('md'));
   el('fixesBackBtn').addEventListener('click', () => show('results'));
   el('fixesVersionsBtn').addEventListener('click', () => void showVersions('fixes'));
   el('fixesEditBtn').addEventListener('click', () => void onApplyFixesAndEdit());
@@ -1740,7 +1792,10 @@ function init(): void {
     }
   });
   show('capture');
-  initMcpPanel({ onBack: () => { setMode(state.mode); show('capture'); } });
+  initMcpPanel({
+    onBack: () => { setMode(state.mode); show('capture'); },
+    onUseInScenario: (serverId, toolNames) => onUseMcpInScenario(serverId, toolNames),
+  });
   void (async () => {
     await applyDefaults();
     await restoreSession();

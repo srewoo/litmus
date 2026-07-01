@@ -1,9 +1,9 @@
 /** OpenAI chat-completions adapter (streaming). Decodes SSE deltas and times the stream. */
 import type { ChatCallOptions, ChatMessage, ChatRequest, ChatResponse, Provider } from './types';
-import { ProviderError, defaultFetch } from './types';
+import { ProviderError, defaultFetch, DEFAULT_MAX_TOKENS } from './types';
 import type { ToolDef } from '../shared/types';
 import { iterateSSE } from './sse';
-import { supportsTemperature } from './capabilities';
+import { supportsTemperature, maxTokensField } from './capabilities';
 import { timeChunkStream } from '../core/stream';
 import { finalizeTiming } from '../core/timing';
 import type { ToolAcc, ToolCallDelta } from './toolStream';
@@ -104,7 +104,11 @@ export class OpenAIProvider implements Provider {
         messages: toOpenAIMessages(request.messages),
         // Reasoning models (o-series) reject `temperature`; omit it for them.
         ...(supportsTemperature('openai', request.model) ? { temperature: request.temperature ?? 0 } : {}),
-        max_tokens: request.maxTokens,
+        // Reasoning models (o-series, gpt-5) reject `max_tokens` and require
+        // `max_completion_tokens`; pick the field the model accepts. Default the
+        // cap so unset requests aren't left uncapped (or capped differently than
+        // the other providers).
+        [maxTokensField('openai', request.model)]: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         ...(request.tools?.length ? { tools: toOpenAITools(request.tools) } : {}),
         stream: true,
         stream_options: { include_usage: true },

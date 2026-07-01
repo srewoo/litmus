@@ -1,6 +1,6 @@
 /** Google Gemini adapter (streaming via :streamGenerateContent?alt=sse). */
 import type { ChatCallOptions, ChatMessage, ChatRequest, ChatResponse, Provider } from './types';
-import { ProviderError, defaultFetch } from './types';
+import { ProviderError, defaultFetch, DEFAULT_MAX_TOKENS } from './types';
 import type { ToolCall, ToolDef } from '../shared/types';
 import { iterateSSE } from './sse';
 import { timeChunkStream } from '../core/stream';
@@ -114,7 +114,7 @@ export class GoogleProvider implements Provider {
         ...(request.tools?.length ? { tools: toGoogleTools(request.tools) } : {}),
         generationConfig: {
           temperature: request.temperature ?? 0,
-          ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+          maxOutputTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         },
       }),
     };

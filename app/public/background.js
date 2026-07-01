@@ -21,11 +21,16 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Version history is scoped per tab (chrome.storage.session key litmus:versions:<tabId>).
-// When the tab closes, drop its history so it doesn't outlive the tab or leak into a
-// future tab. Must stay in sync with VERSION_KEY_PREFIX in src/platform/sessionTabStore.ts.
+// Version history is now DURABLE (ADR 0004): it lives under a single stable key
+// in chrome.storage.local (litmus:versions:default) and intentionally survives
+// tab close and browser restart, so the iterate-and-compare loop persists across
+// sessions. There is therefore no per-tab cleanup here.
+//
+// Legacy hygiene: older builds wrote per-tab keys to chrome.storage.session; if
+// any linger, drop them on tab close so they don't accumulate. (No effect on the
+// durable local namespace.)
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session
     .remove('litmus:versions:' + tabId)
-    .catch((err) => console.error('[litmus] clear tab versions:', err));
+    .catch((err) => console.error('[litmus] clear legacy tab versions:', err));
 });

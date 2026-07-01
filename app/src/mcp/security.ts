@@ -148,6 +148,15 @@ export function generateProbes(tool: McpToolDescriptor): { probes: SecurityProbe
 /** The observed outcome of running a probe (no I/O here). */
 export type ProbeOutcome = { readonly ok: true; readonly result: McpCallResult } | { readonly ok: false; readonly error: string };
 
+/**
+ * A server can echo sensitive data in a NON-text content block (json / resource
+ * / image annotations); `result.text` only holds the concatenated `text`
+ * blocks, so scanning it alone misses those. `classifyOutcome` therefore scans
+ * `result.text` PLUS a serialization of the full structured `content`. The
+ * markers (`root:x:0:0`, `uid=`, `/bin/bash`, `NT AUTHORITY`) contain no quotes,
+ * so they survive JSON stringification.
+ */
+
 /** Classify a probe's outcome into a finding. Pure. */
 export function classifyOutcome(probe: SecurityProbe, outcome: ProbeOutcome): SecurityFinding {
   if (!outcome.ok) {
@@ -155,11 +164,18 @@ export function classifyOutcome(probe: SecurityProbe, outcome: ProbeOutcome): Se
   }
   const { result } = outcome;
   if (probe.kind === 'injection') {
-    const leaked = LEAK_MARKERS.find((m) => result.text.includes(m));
+    let structured = '';
+    try {
+      structured = JSON.stringify(result.content);
+    } catch {
+      structured = '';
+    }
+    const haystack = `${result.text}\n${structured}`;
+    const leaked = LEAK_MARKERS.find((m) => haystack.includes(m));
     if (!result.isError && leaked) {
       return { probe, classification: 'possible-leak', severity: 'high', detail: `output contains sensitive marker "${leaked}"` };
     }
-    if (!result.isError && probe.payload && result.text.includes(probe.payload)) {
+    if (!result.isError && probe.payload && haystack.includes(probe.payload)) {
       return { probe, classification: 'possible-leak', severity: 'medium', detail: 'payload reflected verbatim in output' };
     }
     return result.isError

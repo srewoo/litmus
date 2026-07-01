@@ -39,6 +39,23 @@ export class IndexedDbStore implements PersistentStore {
     await promisifyRequest(db.transaction(VERSIONS_STORE, 'readwrite').objectStore(VERSIONS_STORE).put(version));
     db.close();
   }
+  async appendVersion(build: (index: number, prev: PromptVersion | undefined) => PromptVersion): Promise<PromptVersion> {
+    const db = await openDb();
+    try {
+      // Read the current versions and put the new one within ONE readwrite
+      // transaction so index allocation is atomic (IndexedDB serializes
+      // overlapping readwrite transactions on the same store).
+      const store = db.transaction(VERSIONS_STORE, 'readwrite').objectStore(VERSIONS_STORE);
+      const all = ((await promisifyRequest(store.getAll())) as PromptVersion[]).sort((a, b) => a.index - b.index);
+      const index = all.length + 1;
+      const prev = all[all.length - 1];
+      const version = build(index, prev);
+      await promisifyRequest(store.put(version));
+      return version;
+    } finally {
+      db.close();
+    }
+  }
   async getRun(versionId: string): Promise<RunRecord | null> {
     const db = await openDb();
     const rec = await promisifyRequest(db.transaction(RUNS_STORE, 'readonly').objectStore(RUNS_STORE).get(versionId));

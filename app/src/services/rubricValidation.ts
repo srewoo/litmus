@@ -42,7 +42,12 @@ export async function validateRubric(
   results: readonly CaseResult[],
   deps: ValidateDeps,
 ): Promise<RubricHealth | null> {
-  const target = results[0];
+  // Consistency re-judges ONE case several times to measure judge variance.
+  // Basing it on results[0] is wrong when that case errored (network/parse):
+  // its output is '' and score 0, so we'd measure the judge's consistency on an
+  // empty string, not on real model output. Pick the first case that actually
+  // produced output; fall back to results[0] only if every case errored.
+  const target = results.find((r) => r.output.trim().length > 0) ?? results[0];
   if (!target) return null;
 
   const input = cases.find((c) => c.id === target.caseId)?.input ?? '';

@@ -156,6 +156,18 @@ async function wireMcp(serverId: string, deps: RunDeps): Promise<{ tools: ToolDe
   return { tools, resolver: mcpResolver(client, discovered) };
 }
 
+/**
+ * A user cancel must actually STOP the run — not just mark it. `runOneCase`
+ * catches every error (including the provider's AbortError) and turns it into a
+ * failed CaseResult, so without an explicit check a cancelled run would keep
+ * issuing (and paying for) calls for the remaining samples/cases, then RESOLVE
+ * with a full set of "aborted" results — causing the caller to persist a bogus
+ * version. Checking the signal OUTSIDE `runOneCase` lets the abort propagate.
+ */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Run aborted', 'AbortError');
+}
+
 async function runOneCase(systemPrompt: string, evalCase: EvalCase, deps: RunDeps): Promise<CaseResult> {
   const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
   const isToolCase = evalCase.toolExpectations !== undefined;
@@ -235,7 +247,10 @@ async function runCaseSampled(
   threshold: number,
 ): Promise<CaseResult> {
   const runs: CaseResult[] = [];
-  for (let s = 0; s < samples; s++) runs.push(await runOneCase(systemPrompt, evalCase, deps));
+  for (let s = 0; s < samples; s++) {
+    throwIfAborted(deps.signal); // stop sampling the moment the user cancels
+    runs.push(await runOneCase(systemPrompt, evalCase, deps));
+  }
   return foldSamples(runs, threshold);
 }
 
@@ -261,9 +276,14 @@ export async function runEval(
   const concurrency = positiveCount(deps.concurrency ?? 1);
   let done = 0;
   const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
+    throwIfAborted(deps.signal); // don't start new cases once cancelled
     const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
     deps.onProgress?.(++done, cases.length);
     return r;
   });
+  // Definitive gate: if the run was cancelled at any point, REJECT rather than
+  // return partial "aborted" results, so callers (loop/UI) skip persistence and
+  // the "run canceled — no version saved" path fires as written.
+  throwIfAborted(deps.signal);
   return { results, summary: summarizeRun(results, threshold) };
 }

@@ -42,9 +42,12 @@ interface State {
   prompts: McpPrompt[];
   cat: 'tools' | 'resources' | 'prompts';
   scanned: boolean;
+  /** Id of the connected server (saved into settings.mcpServers), for the scenario on-ramp. */
+  serverId?: string;
 }
 const s: State = { conn: 'disconnected', tools: [], resources: [], prompts: [], cat: 'tools', scanned: false };
 let onBack: () => void = () => {};
+let onUseInScenario: (serverId: string, toolNames: string[]) => void = () => {};
 
 const $ = (id: string): HTMLElement | null => document.getElementById(id);
 const v = (id: string): string => ($(id) as HTMLInputElement | null)?.value.trim() ?? '';
@@ -102,6 +105,7 @@ async function onConnect(): Promise<void> {
   }
   const settings = await loadSettings(area);
   await saveSettings(area, { ...settings, mcpServers: [config] });
+  s.serverId = config.id;
   setConn('connecting');
   try {
     const client = connectMcp(config);
@@ -139,7 +143,10 @@ async function onConnect(): Promise<void> {
 
 function renderTabs(): void {
   for (const btn of Array.from(document.querySelectorAll<HTMLElement>('.mcptab'))) {
-    btn.setAttribute('aria-selected', String(btn.dataset['cat'] === s.cat));
+    const selected = btn.dataset['cat'] === s.cat;
+    btn.setAttribute('aria-selected', String(selected));
+    // Roving tabindex: only the active tab is a tab-stop (ARIA tab pattern).
+    btn.setAttribute('tabindex', selected ? '0' : '-1');
   }
 }
 
@@ -313,13 +320,21 @@ async function restore(): Promise<void> {
 }
 
 /** Wire the MCP view. `onBack` returns to the entry screen. No-op if markup absent. */
-export function initMcpPanel(nav: { onBack: () => void } = { onBack: () => {} }): void {
+export function initMcpPanel(
+  nav: { onBack: () => void; onUseInScenario?: (serverId: string, toolNames: string[]) => void } = { onBack: () => {} },
+): void {
   if (!$('mcpConnectBtn')) return;
   onBack = nav.onBack;
+  if (nav.onUseInScenario) onUseInScenario = nav.onUseInScenario;
   setConn('disconnected');
   $('mcpConnectBtn')?.addEventListener('click', () => void onConnect());
   $('mcpScanBtn')?.addEventListener('click', () => void onScan());
   $('mcpForgetBtn')?.addEventListener('click', () => void onForget());
+  // On-ramp: turn the inspector into a test setup — prefill an agent scenario
+  // bound to this live server (ADR 0003 mcpServerId) instead of dead-ending.
+  $('mcpUseScenarioBtn')?.addEventListener('click', () =>
+    onUseInScenario(s.serverId ?? 's1', s.tools.map((t) => t.name)),
+  );
   $('mcpBackBtn')?.addEventListener('click', () => onBack());
   $('mcpCatalog')?.addEventListener('click', (e) => {
     const li = (e.target as HTMLElement).closest('.mcp-tool') as HTMLElement | null;

@@ -35,6 +35,32 @@ describe('InMemoryStore', () => {
     expect((await store.getRun('v1'))?.summary.overall).toBe(8);
   });
 
+  it('appendVersion should allocate sequential 1-based indexes and pass the previous version', async () => {
+    const store = new InMemoryStore();
+    const seenPrev: (string | undefined)[] = [];
+    const v1 = await store.appendVersion((index, prev) => {
+      seenPrev.push(prev?.id);
+      return version(`v${index}`, index);
+    });
+    const v2 = await store.appendVersion((index, prev) => {
+      seenPrev.push(prev?.id);
+      return version(`v${index}`, index);
+    });
+    expect([v1.index, v2.index]).toEqual([1, 2]);
+    expect(seenPrev).toEqual([undefined, 'v1']); // v2's build saw v1 as prev
+    expect((await store.getVersions()).map((v) => v.id)).toEqual(['v1', 'v2']);
+  });
+
+  it('appendVersion should not collide indexes under concurrent calls', async () => {
+    const store = new InMemoryStore();
+    const built = await Promise.all(
+      Array.from({ length: 5 }, () => store.appendVersion((index) => version(`v${index}`, index))),
+    );
+    const indexes = built.map((v) => v.index).sort((a, b) => a - b);
+    expect(indexes).toEqual([1, 2, 3, 4, 5]); // all distinct, no duplicate N+1
+    expect((await store.getVersions())).toHaveLength(5);
+  });
+
   it('should return a copy of versions, not the internal array', async () => {
     const store = new InMemoryStore();
     await store.putVersion(version('v1', 1));

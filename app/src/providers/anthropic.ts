@@ -1,6 +1,6 @@
 /** Anthropic Messages adapter (streaming). Needs the browser-access opt-in header for BYOK. */
 import type { ChatCallOptions, ChatMessage, ChatRequest, ChatResponse, Provider } from './types';
-import { ProviderError, defaultFetch } from './types';
+import { ProviderError, defaultFetch, DEFAULT_MAX_TOKENS } from './types';
 import type { ToolDef } from '../shared/types';
 import { iterateSSE } from './sse';
 import { timeChunkStream } from '../core/stream';
@@ -149,7 +149,7 @@ export class AnthropicProvider implements Provider {
       },
       body: JSON.stringify({
         model: request.model,
-        max_tokens: request.maxTokens ?? 1024,
+        max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         temperature: request.temperature ?? 0,
         stream: true,
         ...(system ? { system } : {}),

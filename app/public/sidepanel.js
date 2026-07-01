@@ -4336,16 +4336,15 @@
 
   // src/platform/sessionTabStore.ts
   var VERSION_KEY_PREFIX = "litmus:versions:";
-  function versionKeyForTab(tabId) {
-    return `${VERSION_KEY_PREFIX}${tabId ?? "panel"}`;
-  }
-  var EMPTY = { versions: [], runs: {} };
+  var DURABLE_VERSION_KEY = `${VERSION_KEY_PREFIX}default`;
+  var SCHEMA_VERSION = 1;
+  var EMPTY = { schemaVersion: SCHEMA_VERSION, versions: [], runs: {} };
   function asBlob(value) {
-    if (typeof value !== "object" || value === null) return { versions: [], runs: {} };
+    if (typeof value !== "object" || value === null) return { ...EMPTY };
     const v2 = value;
     const versions = Array.isArray(v2["versions"]) ? v2["versions"] : [];
     const runs = typeof v2["runs"] === "object" && v2["runs"] !== null ? v2["runs"] : {};
-    return { versions, runs };
+    return { schemaVersion: SCHEMA_VERSION, versions, runs };
   }
   var SessionTabStore = class {
     constructor(area3, resolveKey) {
@@ -4388,7 +4387,7 @@
     }
     async write(blob) {
       const k = await this.key();
-      await this.area.set({ [k]: blob });
+      await this.area.set({ [k]: { schemaVersion: SCHEMA_VERSION, ...blob } });
     }
     async getVersions() {
       const { versions } = await this.read();
@@ -4400,6 +4399,19 @@
         const versions = blob.versions.filter((v2) => v2.id !== version.id);
         versions.push(version);
         await this.write({ versions, runs: blob.runs });
+      });
+    }
+    async appendVersion(build) {
+      return this.enqueue(async () => {
+        const blob = await this.read();
+        const sorted = [...blob.versions].sort((a, b) => a.index - b.index);
+        const index = sorted.length + 1;
+        const prev = sorted[sorted.length - 1];
+        const version = build(index, prev);
+        const versions = blob.versions.filter((v2) => v2.id !== version.id);
+        versions.push(version);
+        await this.write({ versions, runs: blob.runs });
+        return version;
       });
     }
     async getRun(versionId) {
@@ -4415,6 +4427,7 @@
   };
 
   // src/providers/types.ts
+  var DEFAULT_MAX_TOKENS = 16e3;
   function defaultFetch() {
     return globalThis.fetch.bind(globalThis);
   }
@@ -4486,9 +4499,15 @@
   }
 
   // src/providers/capabilities.ts
+  var OPENAI_NO_TEMPERATURE = /^(o\d|gpt-5)/i;
   function supportsTemperature(provider, model) {
-    if (provider === "openai") return /^(gpt-4|gpt-3\.5|chatgpt-4)/i.test(model);
+    if (provider === "openai") return !OPENAI_NO_TEMPERATURE.test(model);
     return true;
+  }
+  var OPENAI_MAX_COMPLETION_TOKENS = /^(o\d|gpt-5)/i;
+  function maxTokensField(provider, model) {
+    if (provider === "openai" && OPENAI_MAX_COMPLETION_TOKENS.test(model)) return "max_completion_tokens";
+    return "max_tokens";
   }
   var OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search|babbage|davinci)/i;
   function isChatModel(provider, model) {
@@ -4499,16 +4518,17 @@
     if (provider === "openai") {
       if (!isChatModel("openai", model)) return false;
       if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
-      return /^(gpt-4|gpt-5|chatgpt-4|o\d)/i.test(model);
+      return true;
     }
     if (provider === "anthropic") {
-      return /claude-(3|4|opus-4|sonnet-4|haiku-4|[5-9])/i.test(model);
+      if (/claude-(2|instant)/i.test(model)) return false;
+      return true;
     }
     if (provider === "google") {
-      if (/gemini-1\.0/i.test(model)) return false;
-      return /gemini-(1\.5|[2-9])/i.test(model);
+      if (/gemini-1\.0|pro-vision/i.test(model)) return false;
+      return true;
     }
-    return false;
+    return true;
   }
 
   // src/core/stream.ts
@@ -4668,7 +4688,11 @@
           messages: toOpenAIMessages(request.messages),
           // Reasoning models (o-series) reject `temperature`; omit it for them.
           ...supportsTemperature("openai", request.model) ? { temperature: request.temperature ?? 0 } : {},
-          max_tokens: request.maxTokens,
+          // Reasoning models (o-series, gpt-5) reject `max_tokens` and require
+          // `max_completion_tokens`; pick the field the model accepts. Default the
+          // cap so unset requests aren't left uncapped (or capped differently than
+          // the other providers).
+          [maxTokensField("openai", request.model)]: request.maxTokens ?? DEFAULT_MAX_TOKENS,
           ...request.tools?.length ? { tools: toOpenAITools(request.tools) } : {},
           stream: true,
           stream_options: { include_usage: true }
@@ -4801,7 +4825,7 @@
         },
         body: JSON.stringify({
           model: request.model,
-          max_tokens: request.maxTokens ?? 1024,
+          max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
           temperature: request.temperature ?? 0,
           stream: true,
           ...system ? { system } : {},
@@ -4918,7 +4942,7 @@
           ...request.tools?.length ? { tools: toGoogleTools(request.tools) } : {},
           generationConfig: {
             temperature: request.temperature ?? 0,
-            ...request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}
+            maxOutputTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS
           }
         })
       };
@@ -5576,7 +5600,7 @@ ${output}`
   // src/services/rubricValidation.ts
   var MIN_DISCRIMINATION_SAMPLES = 3;
   async function validateRubric(systemPrompt, cases, results, deps) {
-    const target = results[0];
+    const target = results.find((r) => r.output.trim().length > 0) ?? results[0];
     if (!target) return null;
     const input = cases.find((c) => c.id === target.caseId)?.input ?? "";
     const scores = [target.score];
@@ -6269,6 +6293,9 @@ ${output}`
     }));
     return { tools, resolver: mcpResolver(client, discovered) };
   }
+  function throwIfAborted(signal) {
+    if (signal?.aborted) throw new DOMException("Run aborted", "AbortError");
+  }
   async function runOneCase(systemPrompt, evalCase, deps) {
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
     const isToolCase = evalCase.toolExpectations !== void 0;
@@ -6329,7 +6356,10 @@ ${output}`
   }
   async function runCaseSampled(systemPrompt, evalCase, deps, samples, threshold) {
     const runs = [];
-    for (let s2 = 0; s2 < samples; s2++) runs.push(await runOneCase(systemPrompt, evalCase, deps));
+    for (let s2 = 0; s2 < samples; s2++) {
+      throwIfAborted(deps.signal);
+      runs.push(await runOneCase(systemPrompt, evalCase, deps));
+    }
     return foldSamples(runs, threshold);
   }
   async function runEval(systemPrompt, cases, deps) {
@@ -6338,10 +6368,12 @@ ${output}`
     const concurrency = positiveCount(deps.concurrency ?? 1);
     let done = 0;
     const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
+      throwIfAborted(deps.signal);
       const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
       deps.onProgress?.(++done, cases.length);
       return r;
     });
+    throwIfAborted(deps.signal);
     return { results, summary: summarizeRun(results, threshold) };
   }
 
@@ -6618,6 +6650,9 @@ ${systemPrompt}`,
       return `<div class="facet"><div class="fr"><span class="fn"><span>${FACET_ICON[f.facet] ?? "\u2022"}</span>${name}</span><span class="fsc ${b}">${f.score.toFixed(1)}</span></div><div class="fbar"><i class="bar-${b}" style="width:${width}%"></i></div><div class="fnote">${esc(f.finding)}</div></div>`;
     }).join("");
   }
+  function suggestionsHtml(suggestions) {
+    return suggestions.map((s2) => `<div class="sd">\u2726 ${esc(s2)}</div>`).join("");
+  }
   var CAT_CLASS = { typical: "typ", edge: "edge", adversarial: "adv" };
   function casesListHtml(cases) {
     if (cases.length === 0) return '<p class="sub">No cases yet.</p>';
@@ -6702,7 +6737,8 @@ ${c?.input ?? ""}
       const idTag = `<span class="cid">${esc(r.caseId)}</span>`;
       const spread = r.samples ? r.samples.min === r.samples.max ? `<span class="spread">\xD7${r.samples.count}</span>` : `<span class="spread">${r.samples.min}\u2013${r.samples.max}</span>` : "";
       const scoreAria = `score ${r.score.toFixed(1)}, ${r.passed ? "passed" : "failed"}`;
-      return `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">\u25B8</span>${idTag}${esc(detail)}</div><div class="cell ${b === "lo" ? "lo" : "ok"}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>` + caseDetailHtml(r, c);
+      const cellClass = b === "hi" ? "cell ok" : b === "mid" ? "cell mid" : "cell lo";
+      return `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">\u25B8</span>${idTag}${esc(detail)}</div><div class="${cellClass}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div><div class="cell">${mark}</div></div>` + caseDetailHtml(r, c);
     }).join("");
     return `<div class="matrix"><div class="mhead"><div>Case</div><div>Score</div><div>P/F</div></div>${rows}</div>`;
   }
@@ -6713,8 +6749,12 @@ ${c?.input ?? ""}
       return `<div class="fix"><div class="ft"><span class="rk">${String(i + 1).padStart(2, "0")}</span><span class="fh">${esc(f.title)}</span></div><p class="fp">${esc(f.edit)}</p>${evid}</div>`;
     }).join("");
   }
+  function termHtml(definition, inner) {
+    const def = esc(definition);
+    return `<span class="term" title="${def}" tabindex="0" role="note" aria-label="${def}">${inner}</span>`;
+  }
   function axisHeaderHtml(label = "By dimension") {
-    return `<span class="term" title="${TERM_LITMUS_AXIS}">${esc(label)}</span>`;
+    return termHtml(TERM_LITMUS_AXIS, esc(label));
   }
   function axisRowsHtml(rows) {
     return rows.map(
@@ -6736,7 +6776,7 @@ ${c?.input ?? ""}
   var TERM_LITMUS_AXIS = "What changed between two versions, broken down by quality dimension.";
   function rubricHealthHtml(health) {
     const verdict = `Discrimination <b>${esc(health.discrimination.rating)}</b> \xB7 Consistency <b>${esc(health.consistency.rating)}</b>`;
-    return `<div class="rh-summary"><span class="term" title="${TERM_RUBRIC_HEALTH}">Rubric health</span>: ${verdict}</div><details class="adv"><summary>Rubric health detail</summary><span class="rh-disc"><span class="term" title="${TERM_DISCRIMINATION}">Discrimination</span> ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span> \xB7 <span class="rh-cons"><span class="term" title="${TERM_CONSISTENCY}">Consistency</span> \u03C3${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span></details>`;
+    return `<div class="rh-summary">${termHtml(TERM_RUBRIC_HEALTH, "Rubric health")}: ${verdict}</div><details class="adv"><summary>Rubric health detail</summary><span class="rh-disc">${termHtml(TERM_DISCRIMINATION, "Discrimination")} ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span> \xB7 <span class="rh-cons">${termHtml(TERM_CONSISTENCY, "Consistency")} \u03C3${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span></details>`;
   }
   function versionsTimelineHtml(items) {
     if (items.length === 0) return '<p class="sub">No versions yet \u2014 run the loop to save v1.</p>';
@@ -6907,11 +6947,19 @@ ${c?.input ?? ""}
     }
     const { result } = outcome;
     if (probe.kind === "injection") {
-      const leaked = LEAK_MARKERS.find((m) => result.text.includes(m));
+      let structured = "";
+      try {
+        structured = JSON.stringify(result.content);
+      } catch {
+        structured = "";
+      }
+      const haystack = `${result.text}
+${structured}`;
+      const leaked = LEAK_MARKERS.find((m) => haystack.includes(m));
       if (!result.isError && leaked) {
         return { probe, classification: "possible-leak", severity: "high", detail: `output contains sensitive marker "${leaked}"` };
       }
-      if (!result.isError && probe.payload && result.text.includes(probe.payload)) {
+      if (!result.isError && probe.payload && haystack.includes(probe.payload)) {
         return { probe, classification: "possible-leak", severity: "medium", detail: "payload reflected verbatim in output" };
       }
       return result.isError ? { probe, classification: "rejected", severity: "low", detail: "server rejected the injection input" } : { probe, classification: "rejected", severity: "low", detail: "no leak detected in output" };
@@ -7085,6 +7133,8 @@ what language is it written in?` : `{"city":"Paris"}
   var s = { conn: "disconnected", tools: [], resources: [], prompts: [], cat: "tools", scanned: false };
   var onBack = () => {
   };
+  var onUseInScenario = () => {
+  };
   var $ = (id) => document.getElementById(id);
   var v = (id) => $(id)?.value.trim() ?? "";
   var setHtml = (id, html2) => {
@@ -7137,6 +7187,7 @@ what language is it written in?` : `{"city":"Paris"}
     }
     const settings = await loadSettings(area);
     await saveSettings(area, { ...settings, mcpServers: [config] });
+    s.serverId = config.id;
     setConn("connecting");
     try {
       const client = connectMcp(config);
@@ -7170,7 +7221,9 @@ what language is it written in?` : `{"city":"Paris"}
   }
   function renderTabs() {
     for (const btn of Array.from(document.querySelectorAll(".mcptab"))) {
-      btn.setAttribute("aria-selected", String(btn.dataset["cat"] === s.cat));
+      const selected = btn.dataset["cat"] === s.cat;
+      btn.setAttribute("aria-selected", String(selected));
+      btn.setAttribute("tabindex", selected ? "0" : "-1");
     }
   }
   function renderCatalog() {
@@ -7324,10 +7377,15 @@ what language is it written in?` : `{"city":"Paris"}
   } }) {
     if (!$("mcpConnectBtn")) return;
     onBack = nav.onBack;
+    if (nav.onUseInScenario) onUseInScenario = nav.onUseInScenario;
     setConn("disconnected");
     $("mcpConnectBtn")?.addEventListener("click", () => void onConnect());
     $("mcpScanBtn")?.addEventListener("click", () => void onScan());
     $("mcpForgetBtn")?.addEventListener("click", () => void onForget());
+    $("mcpUseScenarioBtn")?.addEventListener(
+      "click",
+      () => onUseInScenario(s.serverId ?? "s1", s.tools.map((t) => t.name))
+    );
     $("mcpBackBtn")?.addEventListener("click", () => onBack());
     $("mcpCatalog")?.addEventListener("click", (e) => {
       const li = e.target.closest(".mcp-tool");
@@ -7361,15 +7419,7 @@ what language is it written in?` : `{"city":"Paris"}
   var TOOL_CASE_COUNT = 6;
   var area2 = chromeLocal();
   var session = chromeSession();
-  async function resolveVersionKey() {
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      return versionKeyForTab(tabs[0]?.id);
-    } catch {
-      return versionKeyForTab(void 0);
-    }
-  }
-  var store = new SessionTabStore(session, resolveVersionKey);
+  var store = new SessionTabStore(area2, async () => DURABLE_VERSION_KEY);
   var state = {
     prompt: "",
     target: parseTarget(DEFAULT_TARGET_VALUE),
@@ -7493,7 +7543,10 @@ what language is it written in?` : `{"city":"Paris"}
     for (let i = 0; i < rail.length; i++) {
       rail[i].className = i < idx ? "done" : i === idx ? "now" : "";
     }
-    if (idx >= 0) railEl.setAttribute("aria-valuenow", String(idx + 1));
+    if (idx >= 0) {
+      railEl.setAttribute("aria-valuenow", String(idx + 1));
+      railEl.setAttribute("aria-valuetext", `Step ${idx + 1} of ${rail.length}: ${step}`);
+    }
     const heading = document.querySelector(`#view-${step} .h-lead`);
     if (heading) {
       heading.tabIndex = -1;
@@ -7618,6 +7671,32 @@ what language is it written in?` : `{"city":"Paris"}
     el("quickRunRow").classList.toggle("hidden", mode !== "quality");
     persistSession();
   }
+  function onUseMcpInScenario(serverId, toolNames) {
+    setMode("tools");
+    const scenario = {
+      goal: "Describe what the agent should accomplish using this server.",
+      maxSteps: 5,
+      successContains: [],
+      mcpServerId: serverId,
+      tools: []
+      // tools are discovered live from the server at run time
+    };
+    const ta = el("scenarioJson");
+    ta.value = JSON.stringify(scenario, null, 2);
+    void (async () => {
+      try {
+        await renderCasesView();
+      } catch {
+        show("cases");
+      }
+      el("toolPanel").classList.add("hidden");
+      el("agentPanel").classList.remove("hidden");
+      el("agentPanel").open = true;
+      ta.focus();
+    })();
+    const discovered = toolNames.length ? ` ${toolNames.length} tool${toolNames.length === 1 ? "" : "s"} will be discovered live.` : "";
+    setMessage(`Prefilled an agent scenario against "${serverId}" \u2014 set the goal + success check, then "+ Add agent scenario".${discovered}`);
+  }
   function onMcpMode() {
     el("modeQuality").setAttribute("aria-pressed", "false");
     el("modeTools").setAttribute("aria-pressed", "false");
@@ -7645,7 +7724,7 @@ what language is it written in?` : `{"city":"Paris"}
     try {
       ctx = await wiring();
     } catch (e) {
-      el("nokeyCard").classList.remove("hidden");
+      await refreshKeyState();
       return setMessage(e instanceof Error ? e.message : "Add an API key in Settings to start.", "info");
     }
     state.target = ctx.target;
@@ -7668,6 +7747,26 @@ what language is it written in?` : `{"city":"Paris"}
       el("runStatus").textContent = "Generating test cases\u2026";
       await ensureCases(false);
       persistSession();
+      const samples = Math.max(1, ctx.settings.samples);
+      const est = estimateRun({
+        caseCount: state.cases.length * samples,
+        targetModel: ctx.target.model,
+        judgeModel: ctx.w.auxModel,
+        analyzerModel: ctx.w.auxModel,
+        includeAnalysis: false,
+        includeEvalGen: false,
+        includeFixes: true,
+        judgeSamples: ctx.settings.judgeSamples,
+        avgInputTokens: 600,
+        avgOutputTokens: 400
+      });
+      if (exceedsCap(est, ctx.settings.spendCapUsd)) {
+        await renderCasesView();
+        return setMessage(
+          `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(ctx.settings.spendCapUsd)} cap \u2014 trim cases or raise the cap in Settings, then Run.`,
+          "error"
+        );
+      }
       await onRun();
     } catch (err) {
       setMessage(describeError(err), "error");
@@ -7800,7 +7899,7 @@ what language is it written in?` : `{"city":"Paris"}
       });
       el("analyzeKicker").textContent = `How it reads on ${ctx.target.model}`;
       html("facets", facetRowsHtml(state.analysis.facets));
-      html("suggest", state.analysis.suggestions.map((s2) => `<div class="sd">\u2726 ${s2}</div>`).join(""));
+      html("suggest", suggestionsHtml(state.analysis.suggestions));
       persistSession();
       show("analyze");
     } catch (err) {
@@ -8235,22 +8334,20 @@ ${existing}`
           rubric: combined
         }).catch(() => null);
       }
-      const existing = await store.getVersions();
-      const index = existing.length + 1;
-      const prev = existing[existing.length - 1];
-      const samePrompt = Boolean(prev && prev.text === state.prompt);
-      const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
-      const note = index === 1 ? "baseline" : samePrompt ? modelChanged ? `same prompt \xB7 ${target.model}` : "re-run (no change)" : "edited prompt";
-      const version = {
-        id: `v${index}`,
-        index,
-        text: state.prompt,
-        note,
-        parentId: state.lastVersionId,
-        createdAt: Date.now(),
-        target: { provider: target.provider, model: target.model }
-      };
-      await store.putVersion(version);
+      const version = await store.appendVersion((index, prev) => {
+        const samePrompt = Boolean(prev && prev.text === state.prompt);
+        const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
+        const note = index === 1 ? "baseline" : samePrompt ? modelChanged ? `same prompt \xB7 ${target.model}` : "re-run (no change)" : "edited prompt";
+        return {
+          id: `v${index}`,
+          index,
+          text: state.prompt,
+          note,
+          parentId: state.lastVersionId,
+          createdAt: Date.now(),
+          target: { provider: target.provider, model: target.model }
+        };
+      });
       await store.putRun({
         versionId: version.id,
         summary: outcome.summary,
@@ -8733,6 +8830,7 @@ ${existing}`
     el("resultsBackBtn").addEventListener("click", () => show("cases"));
     el("fixBtn").addEventListener("click", () => void onFixes());
     el("resultsVersionsBtn").addEventListener("click", () => void showVersions("results"));
+    el("resultsExportBtn").addEventListener("click", () => void exportReport("md"));
     el("fixesBackBtn").addEventListener("click", () => show("results"));
     el("fixesVersionsBtn").addEventListener("click", () => void showVersions("fixes"));
     el("fixesEditBtn").addEventListener("click", () => void onApplyFixesAndEdit());
@@ -8753,10 +8851,13 @@ ${existing}`
       }
     });
     show("capture");
-    initMcpPanel({ onBack: () => {
-      setMode(state.mode);
-      show("capture");
-    } });
+    initMcpPanel({
+      onBack: () => {
+        setMode(state.mode);
+        show("capture");
+      },
+      onUseInScenario: (serverId, toolNames) => onUseMcpInScenario(serverId, toolNames)
+    });
     void (async () => {
       await applyDefaults();
       await restoreSession();

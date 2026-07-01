@@ -57,6 +57,15 @@ export function facetRowsHtml(facets: readonly FacetScore[]): string {
     .join('');
 }
 
+/**
+ * Analysis rewrite suggestions. The text is model-generated, so it MUST be
+ * escaped before it reaches innerHTML — a suggestion containing markup would
+ * otherwise inject into the panel that holds the user's API keys.
+ */
+export function suggestionsHtml(suggestions: readonly string[]): string {
+  return suggestions.map((s) => `<div class="sd">✦ ${esc(s)}</div>`).join('');
+}
+
 const CAT_CLASS: Record<EvalCase['category'], string> = { typical: 'typ', edge: 'edge', adversarial: 'adv' };
 
 export function casesListHtml(cases: readonly EvalCase[]): string {
@@ -194,9 +203,13 @@ export function resultsTableHtml(
       // Non-color cue for the score: an aria-label spells out the value and
       // pass/fail so screen readers and colorblind users aren't relying on hue.
       const scoreAria = `score ${r.score.toFixed(1)}, ${r.passed ? 'passed' : 'failed'}`;
+      // Three score states so a borderline "mid" band is visually distinct from
+      // a clearly passing cell, not collapsed into 'ok'. The CSS styles .cell.mid
+      // (amber + a non-color cue). Pass/fail stays driven by the real pass logic.
+      const cellClass = b === 'hi' ? 'cell ok' : b === 'mid' ? 'cell mid' : 'cell lo';
       return (
         `<div class="mrow" data-cid="${esc(r.caseId)}" title="${esc(tip)}"><div class="cse"><span class="caret">▸</span>${idTag}${esc(detail)}</div>` +
-        `<div class="cell ${b === 'lo' ? 'lo' : 'ok'}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div>` +
+        `<div class="${cellClass}" aria-label="${esc(scoreAria)}">${r.score.toFixed(1)}${spread}</div>` +
         `<div class="cell">${mark}</div></div>` +
         caseDetailHtml(r, c)
       );
@@ -225,11 +238,22 @@ export function fixesListHtml(fixes: readonly FixVM[]): string {
 }
 
 /**
+ * One inline glossary term. The definition is surfaced three ways so it
+ * reaches mouse, keyboard and AT users alike: a visible `title=` (hover),
+ * `tabindex="0"` (keyboard focusable), `role="note"` + `aria-label` (the
+ * definition is announced on focus). `inner` is already-escaped HTML.
+ */
+function termHtml(definition: string, inner: string): string {
+  const def = esc(definition);
+  return `<span class="term" title="${def}" tabindex="0" role="note" aria-label="${def}">${inner}</span>`;
+}
+
+/**
  * Header for the litmus-axis panel. Wraps the coined label in an inline
- * glossary term so the plain-language definition is one hover away.
+ * glossary term so the plain-language definition is one hover/focus away.
  */
 export function axisHeaderHtml(label = 'By dimension'): string {
-  return `<span class="term" title="${TERM_LITMUS_AXIS}">${esc(label)}</span>`;
+  return termHtml(TERM_LITMUS_AXIS, esc(label));
 }
 
 /** The litmus axis: diverging bars comparing an old version (coral) vs new (teal). */
@@ -286,10 +310,10 @@ export function rubricHealthHtml(health: {
     `Discrimination <b>${esc(health.discrimination.rating)}</b>` +
     ` · Consistency <b>${esc(health.consistency.rating)}</b>`;
   return (
-    `<div class="rh-summary"><span class="term" title="${TERM_RUBRIC_HEALTH}">Rubric health</span>: ${verdict}</div>` +
+    `<div class="rh-summary">${termHtml(TERM_RUBRIC_HEALTH, 'Rubric health')}: ${verdict}</div>` +
     `<details class="adv"><summary>Rubric health detail</summary>` +
-    `<span class="rh-disc"><span class="term" title="${TERM_DISCRIMINATION}">Discrimination</span> ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span>` +
-    ` · <span class="rh-cons"><span class="term" title="${TERM_CONSISTENCY}">Consistency</span> σ${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span>` +
+    `<span class="rh-disc">${termHtml(TERM_DISCRIMINATION, 'Discrimination')} ${esc(health.discrimination.rating)} (${health.discrimination.gap.toFixed(1)})</span>` +
+    ` · <span class="rh-cons">${termHtml(TERM_CONSISTENCY, 'Consistency')} σ${health.consistency.stdDev.toFixed(1)} (${esc(health.consistency.rating)})</span>` +
     `</details>`
   );
 }

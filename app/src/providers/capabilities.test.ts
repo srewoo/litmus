@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { supportsTemperature, isChatModel, supportsTools } from './capabilities';
+import { supportsTemperature, isChatModel, supportsTools, maxTokensField } from './capabilities';
 
 describe('supportsTemperature', () => {
   it('should omit temperature for the GPT-5 family and o-series reasoning models', () => {
@@ -16,6 +16,34 @@ describe('supportsTemperature', () => {
   it('should send temperature for non-OpenAI providers', () => {
     expect(supportsTemperature('anthropic', 'claude-sonnet-4-6')).toBe(true);
     expect(supportsTemperature('google', 'gemini-3.5-pro')).toBe(true);
+  });
+  it('should fail open and send temperature for unknown / newer OpenAI ids', () => {
+    expect(supportsTemperature('openai', 'gpt-6')).toBe(true);
+    expect(supportsTemperature('openai', 'gpt-4.5-turbo-next')).toBe(true);
+  });
+  it('should send temperature for fine-tune ids', () => {
+    expect(supportsTemperature('openai', 'ft:gpt-4o-2024:my-org::abc123')).toBe(true);
+  });
+});
+
+describe('maxTokensField', () => {
+  it('should use max_completion_tokens for the o-series and gpt-5 reasoning families', () => {
+    expect(maxTokensField('openai', 'o3')).toBe('max_completion_tokens');
+    expect(maxTokensField('openai', 'o4-mini')).toBe('max_completion_tokens');
+    expect(maxTokensField('openai', 'gpt-5-mini')).toBe('max_completion_tokens');
+    expect(maxTokensField('openai', 'gpt-5.5')).toBe('max_completion_tokens');
+  });
+  it('should use max_tokens for gpt-4 / gpt-3.5 family models', () => {
+    expect(maxTokensField('openai', 'gpt-4o')).toBe('max_tokens');
+    expect(maxTokensField('openai', 'gpt-3.5-turbo')).toBe('max_tokens');
+  });
+  it('should fail open to max_tokens for unknown / fine-tune OpenAI ids', () => {
+    expect(maxTokensField('openai', 'gpt-6')).toBe('max_tokens');
+    expect(maxTokensField('openai', 'ft:gpt-4o-2024:my-org::abc123')).toBe('max_tokens');
+  });
+  it('should use max_tokens for non-OpenAI providers', () => {
+    expect(maxTokensField('anthropic', 'claude-sonnet-4-6')).toBe('max_tokens');
+    expect(maxTokensField('google', 'gemini-3.5-pro')).toBe('max_tokens');
   });
 });
 
@@ -67,5 +95,15 @@ describe('supportsTools', () => {
     expect(supportsTools('google', 'gemini-2.0-flash')).toBe(true);
     expect(supportsTools('google', 'gemini-3.5-pro')).toBe(true);
     expect(supportsTools('google', 'gemini-1.0-pro')).toBe(false);
+    expect(supportsTools('google', 'gemini-pro-vision')).toBe(false);
+  });
+  it('should fail open and report tool support for unknown / newer ids', () => {
+    expect(supportsTools('openai', 'gpt-6')).toBe(true);
+    expect(supportsTools('anthropic', 'claude-5-sonnet')).toBe(true);
+    expect(supportsTools('google', 'gemini-3-pro')).toBe(true);
+    expect(supportsTools('openai', 'my-org/llama-tool')).toBe(true);
+  });
+  it('should report tool support for fine-tune ids', () => {
+    expect(supportsTools('openai', 'ft:gpt-4o-2024:my-org::abc123')).toBe(true);
   });
 });

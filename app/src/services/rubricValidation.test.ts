@@ -32,6 +32,29 @@ describe('validateRubric', () => {
     expect((health!.discrimination as { insufficientData?: boolean }).insufficientData).toBeUndefined();
   });
 
+  it('should base consistency on a real case, not an errored empty-output first result', async () => {
+    const judged: string[] = [];
+    const recording: Provider = {
+      id: 'google',
+      async chat(req) {
+        judged.push(req.messages.map((m) => m.content).join('|'));
+        return { text: '{"score":8,"rationale":"r"}', timing };
+      },
+    };
+    const errored: CaseResult = { caseId: 'c1', output: '', score: 0, passed: false, rationale: 'Run failed: 429', timing };
+    const good: CaseResult = { caseId: 'c2', output: 'REAL_OUTPUT', score: 8, passed: true, rationale: 'r', timing };
+    const cases2: EvalCase[] = [
+      { id: 'c1', category: 'typical', input: 'hi', pinned: false },
+      { id: 'c2', category: 'typical', input: 'hello', pinned: false },
+    ];
+    const health = await validateRubric('SYS', cases2, [errored, good], {
+      provider: recording, apiKey: 'sk', model: 'm', repeats: 1,
+    });
+    expect(health).not.toBeNull();
+    // The re-judged output must be the case that actually produced text, not the empty errored one.
+    expect(judged.some((j) => j.includes('REAL_OUTPUT'))).toBe(true);
+  });
+
   it('should mark discrimination as insufficient for a single-case run', async () => {
     const health = await validateRubric('SYS', cases, [result('c1', 8)], {
       provider, apiKey: 'sk', model: 'm', repeats: 1,

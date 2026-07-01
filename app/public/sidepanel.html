@@ -1,11 +1,13 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>litmus</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
+
 <body>
   <div class="app">
     <header class="head">
@@ -17,53 +19,82 @@
     <!-- SETTINGS MODAL -->
     <div class="modal hidden" id="settingsModal">
       <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-        <div class="sheethead"><span class="wordmark" id="settingsTitle"><span class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose" aria-label="Close">✕</button></div>
+        <div class="sheethead"><span class="wordmark" id="settingsTitle"><span
+              class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose"
+            aria-label="Close">✕</button></div>
         <div class="sheetbody">
           <div class="label" style="margin-top:0">API keys — stored only in this browser</div>
-          <div class="krow"><span class="kname">OpenAI</span><input class="field keyinput" id="keyOpenai" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedOpenai"></span></div>
-          <div class="krow"><span class="kname">Anthropic</span><input class="field keyinput" id="keyAnthropic" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedAnthropic"></span></div>
-          <div class="krow"><span class="kname">Google</span><input class="field keyinput" id="keyGoogle" type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedGoogle"></span></div>
+          <div class="krow"><span class="kname">OpenAI</span><input class="field keyinput" id="keyOpenai"
+              type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedOpenai"></span>
+          </div>
+          <div class="krow"><span class="kname">Anthropic</span><input class="field keyinput" id="keyAnthropic"
+              type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedAnthropic"></span>
+          </div>
+          <div class="krow"><span class="kname">Google</span><input class="field keyinput" id="keyGoogle"
+              type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedGoogle"></span>
+          </div>
           <button class="btn ghost block" id="loadModels" style="margin-top:6px">↻ Load models my keys can use</button>
 
           <div class="label">Default model</div>
-          <div class="select"><span class="sl"><span class="pv">AI</span><select id="defaultModel"></select></span></div>
+          <div class="select"><span class="sl"><span class="pv">AI</span><select id="defaultModel"></select></span>
+          </div>
 
           <div class="label">Judge model</div>
           <div class="select"><span class="sl"><span class="pv">⚖</span><select id="judgeModel"></select></span></div>
-          <p class="hint2">The judge scores each output. Default "same as target" always works; pick a distinct model to reduce self-preference bias.</p>
+          <p class="hint2">The judge scores each output. Default "same as target" always works; pick a distinct model to
+            reduce self-preference bias.</p>
 
           <div class="label">Custom model ID (advanced)</div>
-          <input class="field" id="customModel" placeholder="provider/model — e.g. openai/gpt-5.4" autocomplete="off" spellcheck="false" />
+          <input class="field" id="customModel" placeholder="provider/model — e.g. openai/gpt-5.4" autocomplete="off"
+            spellcheck="false" />
           <p class="hint2">Use this for a model not in the list, or one your key has special access to.</p>
 
           <details class="adv">
             <summary>Advanced tuning — thresholds, samples, spend cap</summary>
             <div class="tworow">
-              <div><div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold" type="number" min="0" max="10" step="0.5" /></div>
-              <div><div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0" step="0.05" /></div>
+              <div>
+                <div class="label">Pass threshold (0–10)</div><input class="field numin" id="passThreshold"
+                  type="number" min="0" max="10" step="0.5" />
+              </div>
+              <div>
+                <div class="label">Spend cap (USD)</div><input class="field numin" id="spendCap" type="number" min="0"
+                  step="0.05" />
+              </div>
             </div>
             <div class="label">Samples per case (variance)</div>
             <input class="field numin" id="samples" type="number" min="1" max="5" step="1" />
-            <p class="hint2">Run each case N times to surface run-to-run variance. 1 is fastest; 3–5 reveals how noisy a score is (costs N× more).</p>
+            <p class="hint2">Run each case N times to surface run-to-run variance. 1 is fastest; 3–5 reveals how noisy a
+              score is (costs N× more).</p>
 
             <div class="tworow">
-              <div><div class="label">Judge samples (median)</div><input class="field numin" id="judgeSamples" type="number" min="1" max="5" step="1" /></div>
-              <div><div class="label">Concurrency (cases at once)</div><input class="field numin" id="concurrency" type="number" min="1" max="8" step="1" /></div>
+              <div>
+                <div class="label">Judge samples (median)</div><input class="field numin" id="judgeSamples"
+                  type="number" min="1" max="5" step="1" />
+              </div>
+              <div>
+                <div class="label">Concurrency (cases at once)</div><input class="field numin" id="concurrency"
+                  type="number" min="1" max="8" step="1" />
+              </div>
             </div>
-            <p class="hint2">Judge samples folds N judge calls to the median, cutting single-call judge noise (costs N× judge calls). Concurrency runs that many cases in parallel — faster on big suites, but watch provider rate limits.</p>
+            <p class="hint2">Judge samples folds N judge calls to the median, cutting single-call judge noise (costs N×
+              judge calls). Concurrency runs that many cases in parallel — faster on big suites, but watch provider rate
+              limits.</p>
           </details>
 
           <div class="msg hidden" id="settingsMsg" role="status" aria-live="polite"></div>
           <div class="btn-row">
-            <button class="btn ghost" id="deleteKeys" style="color:var(--coral);border-color:var(--coral-line)">Delete all keys</button>
+            <button class="btn ghost" id="deleteKeys" style="color:var(--coral);border-color:var(--coral-line)">Delete
+              all keys</button>
             <button class="btn primary block" id="saveSettings">Save settings</button>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="rail" id="rail" role="progressbar" aria-label="Test pipeline progress" aria-valuemin="1" aria-valuemax="8" aria-valuenow="1">
-      <span class="now"></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+    <div class="rail" id="rail" role="progressbar" aria-label="Test pipeline progress" aria-valuemin="1"
+      aria-valuemax="8" aria-valuenow="1">
+      <span
+        class="now"></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
     </div>
 
     <div class="msg hidden" id="msg" role="status" aria-live="polite"></div>
@@ -76,14 +107,15 @@
 
       <div class="keybox onboard hidden" id="nokeyCard">
         <div class="label" style="margin-top:0">Add an API key to start</div>
-        <p class="hint2" style="margin-top:0">litmus runs on your own key (OpenAI, Anthropic, or Google), stored only in this browser. Add one to begin.</p>
+        <p class="hint2" style="margin-top:0">litmus runs on your own key (OpenAI, Anthropic, or Google), stored only in
+          this browser. Add one to begin.</p>
         <button class="btn primary block" id="nokeyOpenSettings">⚙ Open Settings to add a key</button>
       </div>
 
       <div id="versionPickerWrap" class="hidden">
         <div class="label" style="margin-top:0">Load a version from this tab</div>
         <div class="select"><span class="sl"><span class="pv">⎘</span>
-          <select id="versionPicker"></select></span>
+            <select id="versionPicker"></select></span>
         </div>
       </div>
 
@@ -91,47 +123,58 @@
         <button class="btn ghost block" id="grabBtn">⤓ Grab from this tab</button>
         <button class="btn ghost block" id="buildBtn">✦ Build one with AI</button>
       </div>
-      <textarea class="field" id="prompt" spellcheck="false" placeholder="Paste your system prompt here — or grab it from the page, build one with AI, or load an example below."></textarea>
+      <textarea class="field" id="prompt" spellcheck="false"
+        placeholder="Paste your system prompt here — or grab it from the page, build one with AI, or load an example below."></textarea>
       <button class="btn ghost block" id="loadExampleBtn" style="margin-top:8px">✎ Load an example prompt</button>
 
       <div class="label">What are you testing?</div>
       <div class="modes" id="modes">
-        <button class="chip" id="modeQuality" aria-pressed="true"><span class="nm">Output quality</span><span class="modesub">analyze + rubric + judge</span></button>
-        <button class="chip" id="modeTools" aria-pressed="false"><span class="nm">Tool &amp; agent</span><span class="modesub">deterministic checks</span></button>
-        <button class="chip" id="modeMcp" aria-pressed="false"><span class="nm">MCP server</span><span class="modesub">connect · inspect · scan</span></button>
+        <button class="chip" id="modeQuality" aria-pressed="true"><span class="nm">Output quality</span><span
+            class="modesub">analyze + rubric + judge</span></button>
+        <button class="chip" id="modeTools" aria-pressed="false"><span class="nm">Tool &amp; agent</span><span
+            class="modesub">deterministic checks</span></button>
+        <button class="chip" id="modeMcp" aria-pressed="false"><span class="nm">MCP server</span><span
+            class="modesub">connect · inspect · scan</span></button>
       </div>
 
       <div class="label">Target model</div>
       <div class="select"><span class="sl"><span class="pv">AI</span>
-        <select id="target"></select></span>
+          <select id="target"></select></span>
       </div>
 
       <div class="label">Output type</div>
       <div class="chips" id="packs">
-        <button class="chip" data-pack="text" aria-pressed="true"><span class="ic">⌨︎</span><span class="nm">Text</span></button>
-        <button class="chip" data-pack="image" aria-pressed="false" disabled><span class="ic">◳</span><span class="nm">Image</span><span class="badge soon">Coming soon</span></button>
-        <button class="chip" data-pack="voice" aria-pressed="false" disabled><span class="ic">◖</span><span class="nm">Voice</span><span class="badge soon">Coming soon</span></button>
-        <button class="chip" data-pack="video" aria-pressed="false" disabled><span class="ic">▣</span><span class="nm">Video</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="text" aria-pressed="true"><span class="ic">⌨︎</span><span
+            class="nm">Text</span></button>
+        <button class="chip" data-pack="image" aria-pressed="false" disabled><span class="ic">◳</span><span
+            class="nm">Image</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="voice" aria-pressed="false" disabled><span class="ic">◖</span><span
+            class="nm">Voice</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="video" aria-pressed="false" disabled><span class="ic">▣</span><span
+            class="nm">Video</span><span class="badge soon">Coming soon</span></button>
       </div>
 
       <div class="keybox hidden" id="keybox">
         <div class="label" style="margin-top:0" id="keyLabel">Your API key (stored only in this browser)</div>
         <div class="keyrow">
-          <input class="field keyinput" id="apiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" />
+          <input class="field keyinput" id="apiKey" type="password" placeholder="sk-…" autocomplete="off"
+            spellcheck="false" />
           <button class="btn ghost" id="saveKey">Save</button>
         </div>
         <div class="keystatus" id="keyStatus"></div>
       </div>
 
       <div class="btn-row"><button class="btn primary block" id="analyzeBtn">Analyze prompt →</button></div>
-      <div class="btn-row" id="quickRunRow" style="margin-top:8px"><button class="btn ghost block" id="quickRunBtn">⚡ Just run it — auto-generate &amp; score</button></div>
+      <div class="btn-row" id="quickRunRow" style="margin-top:8px"><button class="btn ghost block" id="quickRunBtn">⚡
+          Just run it — auto-generate &amp; score</button></div>
     </main>
 
     <!-- 1b BUILD (interactive prompt generator) -->
     <main class="body hidden" id="view-generate">
       <p class="kicker">Don't have a prompt yet?</p>
       <h1 class="h-lead">Build a system prompt</h1>
-      <p class="sub">Describe what you want the assistant to do. litmus will ask a few questions, then write the prompt — drop it straight into a test run.</p>
+      <p class="sub">Describe what you want the assistant to do. litmus will ask a few questions, then write the prompt
+        — drop it straight into a test run.</p>
 
       <div class="chatlog" id="builderLog"></div>
 
@@ -141,7 +184,8 @@
       </div>
 
       <div class="composer">
-        <textarea class="field" id="builderInput" rows="2" spellcheck="false" placeholder="e.g. A support assistant that triages tickets into categories and returns JSON…"></textarea>
+        <textarea class="field" id="builderInput" rows="2" spellcheck="false"
+          placeholder="e.g. A support assistant that triages tickets into categories and returns JSON…"></textarea>
         <div class="btn-row" style="margin-top:9px">
           <button class="btn ghost" id="builderBackBtn">Back</button>
           <button class="btn ghost" id="builderGenerateBtn">✦ Generate now</button>
@@ -174,7 +218,8 @@
       <div class="label">Dimensions</div>
       <div class="dimchips" id="dimensionList"></div>
       <div class="addrow">
-        <input class="field" id="newDimension" placeholder="add a dimension, e.g. groundedness" autocomplete="off" spellcheck="false" />
+        <input class="field" id="newDimension" placeholder="add a dimension, e.g. groundedness" autocomplete="off"
+          spellcheck="false" />
         <button class="btn ghost" id="addDimBtn">+ Add</button>
       </div>
       <div class="label" id="activeDimLabel">Rubric</div>
@@ -198,19 +243,24 @@
 
       <details class="toolpanel" id="toolPanel">
         <summary>🔧 Tool tests <span class="badge beta">Beta</span></summary>
-        <p class="toolhint">Test whether the model calls the right tool with valid arguments. Define the tools available to it, then add a case that asserts the expected call.</p>
+        <p class="toolhint">Test whether the model calls the right tool with valid arguments. Define the tools available
+          to it, then add a case that asserts the expected call.</p>
 
         <div class="label">Tool definitions · JSON array</div>
-        <textarea class="field mono toolarea" id="toolDefs" spellcheck="false" placeholder='[{"name":"get_weather","description":"Look up weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}}]'></textarea>
+        <textarea class="field mono toolarea" id="toolDefs" spellcheck="false"
+          placeholder='[{"name":"get_weather","description":"Look up weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}}]'></textarea>
         <div class="toolstatus" id="toolDefsStatus"></div>
-        <div class="btn-row" style="margin-top:10px"><button class="btn ghost block" id="genToolCasesBtn">✦ Generate tool tests</button></div>
+        <div class="btn-row" style="margin-top:10px"><button class="btn ghost block" id="genToolCasesBtn">✦ Generate
+            tool tests</button></div>
 
         <div class="label">Or add one manually</div>
-        <input class="field" id="toolCaseInput" placeholder="User message — e.g. What's the weather in Paris?" autocomplete="off" />
+        <input class="field" id="toolCaseInput" placeholder="User message — e.g. What's the weather in Paris?"
+          autocomplete="off" />
         <div class="tworow">
           <div>
             <div class="label">Expected tool</div>
-            <div class="select"><span class="sl"><span class="pv">🔧</span><select id="toolExpected"></select></span></div>
+            <div class="select"><span class="sl"><span class="pv">🔧</span><select id="toolExpected"></select></span>
+            </div>
           </div>
           <div>
             <div class="label">Forbidden · comma-sep</div>
@@ -219,16 +269,21 @@
         </div>
         <div class="label">Required args · JSON (optional)</div>
         <input class="field mono" id="toolRequiredArgs" placeholder='{"city":"Paris"}' autocomplete="off" />
-        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addToolCaseBtn">+ Add tool test</button></div>
+        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addToolCaseBtn">+ Add tool
+            test</button></div>
       </details>
 
       <details class="toolpanel" id="agentPanel">
         <summary>🤖 Agent scenarios <span class="badge beta">Beta</span></summary>
-        <p class="toolhint">Test a multi-step agent: give it a goal and mock tools (with scripted results — you can inject a failure to test recovery). litmus runs the model in a loop, feeding tool results back, and scores whether it reaches the goal. Tools are mocked — nothing real is executed.</p>
+        <p class="toolhint">Test a multi-step agent: give it a goal and mock tools (with scripted results — you can
+          inject a failure to test recovery). litmus runs the model in a loop, feeding tool results back, and scores
+          whether it reaches the goal. Tools are mocked — nothing real is executed.</p>
         <div class="label">Scenario · JSON</div>
-        <textarea class="field mono toolarea" id="scenarioJson" spellcheck="false" placeholder='{"goal":"What should I wear in Paris today?","maxSteps":4,"successContains":["jacket"],"tools":[{"name":"get_weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}},"results":[{"value":{"tempC":15,"rain":true}}]}]}'></textarea>
+        <textarea class="field mono toolarea" id="scenarioJson" spellcheck="false"
+          placeholder='{"goal":"What should I wear in Paris today?","maxSteps":4,"successContains":["jacket"],"tools":[{"name":"get_weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}},"results":[{"value":{"tempC":15,"rain":true}}]}]}'></textarea>
         <div class="toolstatus" id="scenarioStatus"></div>
-        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addScenarioBtn">+ Add agent scenario</button></div>
+        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addScenarioBtn">+ Add agent
+            scenario</button></div>
       </details>
 
       <div class="costbar"><span>Estimated cost</span><span class="costval" id="costLine"></span></div>
@@ -246,7 +301,7 @@
       <h1 class="h-lead">Generating &amp; judging</h1>
       <div class="spinner"></div>
       <p class="sub" id="runStatus" style="text-align:center" role="status" aria-live="polite"></p>
-      <p class="sub" id="runProgress" style="text-align:center" aria-live="polite"></p>
+      <p class="sub" id="runProgress" style="text-align:center" aria-live="off"></p>
       <div class="btn-row"><button class="btn ghost block" id="runCancelBtn">Cancel run</button></div>
     </main>
 
@@ -255,7 +310,8 @@
       <p class="kicker">Results</p>
       <h1 class="h-lead">How this version scored</h1>
       <div id="scoreHost"></div>
-      <p class="varnote">◷ Scores vary run-to-run — the target model is non-deterministic. A different score doesn't always mean a different prompt; re-run a version to see its spread.</p>
+      <p class="varnote">◷ Scores vary run-to-run — the target model is non-deterministic. A different score doesn't
+        always mean a different prompt; re-run a version to see its spread.</p>
       <div class="label">Speed · measured this run</div>
       <div id="speedHost"></div>
       <div class="rubrichealth hidden" id="rubricHost"></div>
@@ -264,6 +320,7 @@
       <div class="btn-row">
         <button class="btn ghost" id="resultsBackBtn">Back</button>
         <button class="btn ghost" id="resultsVersionsBtn">Versions</button>
+        <button class="btn ghost" id="resultsExportBtn">⤓ Export</button>
         <button class="btn primary block" id="fixBtn">What to fix →</button>
       </div>
     </main>
@@ -287,10 +344,10 @@
       <div id="versionsHost"></div>
       <div class="compare-row">
         <div class="select"><span class="sl"><span class="pv">A</span>
-          <select id="compareA"></select></span></div>
+            <select id="compareA"></select></span></div>
         <span class="cmp-vs">vs</span>
         <div class="select"><span class="sl"><span class="pv">B</span>
-          <select id="compareB"></select></span></div>
+            <select id="compareB"></select></span></div>
       </div>
       <div id="axisWrap" class="hidden">
         <div class="label" id="axisHeader">By dimension</div>
@@ -315,17 +372,29 @@
 
       <!-- Stage 1: connect form (shown while disconnected) -->
       <div id="mcpConnect">
-        <p class="sub">Point litmus at a live MCP server to inspect what it exposes, call its tools, and run an adversarial security scan.</p>
+        <p class="sub">Point litmus at a live MCP server to inspect what it exposes, call its tools, and run an
+          adversarial security scan.</p>
         <div class="tworow">
-          <div><div class="label" style="margin-top:0">Name</div><input class="field" id="mcpName" placeholder="my-server" autocomplete="off" /></div>
-          <div><div class="label" style="margin-top:0">Transport</div><div class="select"><span class="sl"><span class="pv">🔌</span><select id="mcpTransport"><option value="http">Streamable HTTP</option><option value="sse">SSE</option></select></span></div></div>
+          <div>
+            <div class="label" style="margin-top:0">Name</div><input class="field" id="mcpName" placeholder="my-server"
+              autocomplete="off" />
+          </div>
+          <div>
+            <div class="label" style="margin-top:0">Transport</div>
+            <div class="select"><span class="sl"><span class="pv">🔌</span><select id="mcpTransport">
+                  <option value="http">Streamable HTTP</option>
+                  <option value="sse">SSE</option>
+                </select></span></div>
+          </div>
         </div>
         <div class="label">Server URL</div>
         <input class="field mono" id="mcpUrl" placeholder="https://host/mcp" autocomplete="off" />
         <div class="label">Authorization header · optional</div>
         <input class="field mono" id="mcpAuth" placeholder="Bearer …" autocomplete="off" />
-        <div class="btn-row" style="margin-top:10px"><button class="btn primary block" id="mcpConnectBtn">⇄ Connect &amp; inspect</button></div>
-        <div class="btn-row" style="margin-top:8px"><button class="btn ghost block" id="mcpForgetBtn">Forget saved server</button></div>
+        <div class="btn-row" style="margin-top:10px"><button class="btn primary block" id="mcpConnectBtn">⇄ Connect
+            &amp; inspect</button></div>
+        <div class="btn-row" style="margin-top:8px"><button class="btn ghost block" id="mcpForgetBtn">Forget saved
+            server</button></div>
       </div>
 
       <!-- Stage 2: inspect & test (shown while connected) -->
@@ -333,14 +402,17 @@
         <div id="mcpCaps"></div>
         <div id="mcpConformance"></div>
 
-        <div class="mcptabs" id="mcpTabs" role="tablist">
-          <button class="mcptab" data-cat="tools" role="tab" aria-selected="true">Tools</button>
-          <button class="mcptab" data-cat="resources" role="tab" aria-selected="false">Resources</button>
-          <button class="mcptab" data-cat="prompts" role="tab" aria-selected="false">Prompts</button>
+        <div class="mcptabs" id="mcpTabs" role="tablist" aria-label="MCP catalog">
+          <button class="mcptab" data-cat="tools" role="tab" aria-selected="true" tabindex="0">Tools</button>
+          <button class="mcptab" data-cat="resources" role="tab" aria-selected="false" tabindex="-1">Resources</button>
+          <button class="mcptab" data-cat="prompts" role="tab" aria-selected="false" tabindex="-1">Prompts</button>
         </div>
-        <div id="mcpCatalog"></div>
+        <div id="mcpCatalog" role="tabpanel" aria-label="MCP catalog items"></div>
 
-        <div class="btn-row" style="margin-top:12px"><button class="btn ghost block" id="mcpScanBtn">🛡 Run security scan</button></div>
+        <div class="btn-row" style="margin-top:12px"><button class="btn primary block" id="mcpUseScenarioBtn">🤖 Test an
+            agent against this server →</button></div>
+        <div class="btn-row" style="margin-top:8px"><button class="btn ghost block" id="mcpScanBtn">🛡 Run security
+            scan</button></div>
         <div id="mcpSecurity"></div>
       </div>
 
@@ -349,7 +421,7 @@
     </main>
 
     <div class="foot">
-      <span>litmus 1.1.0 · local-first · BYOK</span>
+      <span>litmus 1.2 · local-first · BYOK</span>
       <span class="footlinks">
         <a href="help.html" target="_blank" rel="noopener">Help</a>
         <span class="dot">·</span>
@@ -359,4 +431,5 @@
   </div>
   <script src="sidepanel.js"></script>
 </body>
+
 </html>

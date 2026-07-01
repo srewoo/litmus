@@ -62,6 +62,20 @@ describe('classifyOutcome', () => {
     expect(f.severity).toBe('high');
   });
 
+  it('flags a leak that appears only in a non-text (structured) content block', () => {
+    // text is empty; the sensitive marker is buried in a json/resource block —
+    // scanning result.text alone would miss it.
+    const p = probe({ kind: 'injection', payload: '$(id)' });
+    const structured: McpCallResult = {
+      isError: false,
+      text: '',
+      content: [{ type: 'json', data: { stdout: 'uid=0(root) gid=0(root)' } }],
+    };
+    const f = classifyOutcome(p, { ok: true, result: structured });
+    expect(f.classification).toBe('possible-leak');
+    expect(f.severity).toBe('high');
+  });
+
   it('flags reflected payload as a medium leak', () => {
     const p = probe({ kind: 'injection', payload: '<script>alert(1)</script>' });
     const f = classifyOutcome(p, { ok: true, result: okResult('you said <script>alert(1)</script>') });
