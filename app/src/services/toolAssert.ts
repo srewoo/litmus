@@ -111,6 +111,22 @@ export function assertToolCalls(
       // 5) Required exact-match args.
       if (expectation.requiredArgs) reasons.push(...checkRequiredArgs(target.arguments, expectation.requiredArgs));
     }
+  } else if (expectation.requiredArgs && !expectation.expectedTool) {
+    // 5b) requiredArgs without expectedTool: no single target call is named, so
+    // the assertion is "SOME call carried these args" — satisfied when AT LEAST
+    // ONE call matches. Requiring every call to match would false-fail a valid
+    // trajectory where the relevant tool is called alongside an unrelated one
+    // (e.g. a logging call). Making no call at all fails.
+    if (calls.length === 0) {
+      reasons.push('requiredArgs set but no tool was called');
+    } else {
+      const anyMatch = calls.some(
+        (c) => c.arguments !== undefined && checkRequiredArgs(c.arguments, expectation.requiredArgs!).length === 0,
+      );
+      if (!anyMatch) {
+        reasons.push(`no tool call carried the required args ${JSON.stringify(expectation.requiredArgs)}`);
+      }
+    }
   }
 
   const passed = reasons.length === 0;

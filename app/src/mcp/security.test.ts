@@ -32,6 +32,30 @@ describe('generateProbes', () => {
     expect(probes.some((p) => p.kind === 'injection')).toBe(false);
     expect(notes.join(' ')).toMatch(/no string input/);
   });
+
+  it('skips the empty-args probe for an all-optional tool ({} is schema-valid)', () => {
+    // Regression: an empty-args probe on a tool with NO required fields makes {}
+    // schema-valid, so accepting it is correct — never a vulnerability.
+    const tool: McpToolDescriptor = { name: 'listAll', inputSchema: { type: 'object', properties: { limit: { type: 'integer' } } } };
+    const { probes, notes } = generateProbes(tool);
+    expect(probes.some((p) => p.kind === 'empty-args')).toBe(false);
+    expect(notes.join(' ')).toMatch(/empty-args probe skipped/);
+    // A required field DOES still get an empty-args probe.
+    expect(generateProbes(WEATHER).probes.some((p) => p.kind === 'empty-args')).toBe(true);
+  });
+
+  it('skips the type-fuzz probe for a property with no declared type (nothing to violate)', () => {
+    // Regression: wrongValue(undefined) returned a string, but an untyped property
+    // accepts any value — a compliant server that took it was wrongly flagged.
+    const tool: McpToolDescriptor = { name: 'echo', inputSchema: { type: 'object', properties: { anything: {} }, required: ['anything'] } };
+    const { probes } = generateProbes(tool);
+    expect(probes.some((p) => p.kind === 'type-fuzz')).toBe(false);
+    // A typed sibling still gets fuzzed.
+    const mixed: McpToolDescriptor = { name: 'mix', inputSchema: { type: 'object', properties: { anything: {}, name: { type: 'string' } }, required: ['name'] } };
+    const fuzz = generateProbes(mixed).probes.filter((p) => p.kind === 'type-fuzz');
+    expect(fuzz).toHaveLength(1);
+    expect(fuzz[0]?.description).toMatch(/"name"/);
+  });
 });
 
 const probe = (over: Partial<SecurityProbe> = {}): SecurityProbe => ({

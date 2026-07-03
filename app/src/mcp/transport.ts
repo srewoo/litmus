@@ -21,6 +21,13 @@ export interface McpTransport {
   notify(n: JsonRpcNotification): Promise<void>;
   /** Session id captured from a server response, if any. */
   readonly sessionId: string | undefined;
+  /**
+   * Tear down the transport's server session. For Streamable-HTTP this issues the
+   * spec's `DELETE` with the `mcp-session-id` header so the server can release the
+   * session; best-effort and idempotent (a no-op when no session was established).
+   * Optional so lightweight fake transports need not implement it.
+   */
+  close?(): Promise<void>;
 }
 
 /** Default per-request timeout; a held-open SSE stream rejects instead of hanging forever. */
@@ -88,6 +95,30 @@ class HttpTransport implements McpTransport {
         : await this.readFromJson(res, req.id);
       if (!msg) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
       return msg;
+    } finally {
+      done();
+    }
+  }
+
+  /**
+   * Terminate the MCP session (spec 2025-03-26+): DELETE the session endpoint with
+   * the `mcp-session-id` header. Best-effort — a server that never issued a session
+   * id, or one that rejects the DELETE, must not fail the caller's teardown.
+   */
+  async close(): Promise<void> {
+    if (!this.sessionId) return; // no server session to release
+    const { signal, done } = this.deadline();
+    try {
+      const res = await this.fetchImpl(this.config.url, {
+        method: 'DELETE',
+        headers: this.headers(),
+        redirect: 'error',
+        signal,
+      } as FetchInit);
+      await res.text().catch(() => '');
+    } catch {
+      // Teardown is best-effort: swallow transport/abort errors so a failed DELETE
+      // never masks the run's real result or throws out of a finally block.
     } finally {
       done();
     }

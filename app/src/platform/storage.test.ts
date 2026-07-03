@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { StorageArea } from './storage';
-import { loadSettings, setKey, getKey, deleteAllKeys } from './storage';
+import { loadSettings, saveSettings, setKey, getKey, deleteAllKeys } from './storage';
 
 class InMemoryStorageArea implements StorageArea {
   private readonly store = new Map<string, unknown>();
@@ -57,5 +57,27 @@ describe('settings storage', () => {
     const after = await deleteAllKeys(area);
     expect(after.keys).toEqual({});
     expect(after.passThreshold).toBe(6);
+  });
+
+  it('should also strip every MCP authHeader secret on deleteAllKeys', async () => {
+    const area = new InMemoryStorageArea();
+    await setKey(area, 'openai', 'sk-abc');
+    // Persist a configured MCP server carrying a bearer token.
+    await saveSettings(area, {
+      ...(await loadSettings(area)),
+      mcpServers: [
+        { id: 's1', name: 'one', url: 'https://a.example.com/mcp', transport: 'http', authHeader: 'Bearer secret-1' },
+        { id: 's2', name: 'two', url: 'https://b.example.com/mcp', transport: 'sse', authHeader: 'Bearer secret-2' },
+      ],
+    });
+
+    const after = await deleteAllKeys(area);
+    expect(after.keys).toEqual({});
+    // Server configs are kept, but no authHeader secret survives anywhere.
+    expect(after.mcpServers.map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(after.mcpServers.every((s) => s.authHeader === undefined)).toBe(true);
+    // Belt-and-suspenders: reload from storage and confirm the token is gone on disk.
+    const reloaded = await loadSettings(area);
+    expect(reloaded.mcpServers.every((s) => s.authHeader === undefined)).toBe(true);
   });
 });

@@ -60,7 +60,15 @@ export async function fetchModels(
     const detail = await res.text().catch(() => '');
     throw new ProviderError(provider, res.status, detail);
   }
-  const json: unknown = JSON.parse(await res.text());
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // A 200 with a non-JSON body (e.g. a proxy's HTML error page) must surface as a
+    // ProviderError so `instanceof ProviderError` handling holds — not a raw SyntaxError.
+    throw new ProviderError(provider, res.status, `expected a JSON model list but received a non-JSON body: ${text.slice(0, 120)}`);
+  }
   return parseFor(provider, json)
     .filter((id) => isChatModel(provider, id))
     .sort((a, b) => a.localeCompare(b));

@@ -17,6 +17,20 @@ export interface RunRecord {
   readonly createdAt: number;
 }
 
+/**
+ * Thrown when a durable write cannot be persisted because the backing store
+ * rejected `set` (chrome.storage.local enforces a byte quota; a completed paid
+ * run would otherwise be silently lost and the panel wedged). The UI catches
+ * this to message the user (e.g. suggest clearing history) rather than crashing.
+ * `cause` carries the underlying storage error.
+ */
+export class QuotaExceededError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'QuotaExceededError';
+  }
+}
+
 export interface PersistentStore {
   getVersions(): Promise<PromptVersion[]>;
   putVersion(version: PromptVersion): Promise<void>;
@@ -30,6 +44,8 @@ export interface PersistentStore {
    * allocated index and the current latest version (for note/parent logic).
    */
   appendVersion(build: (index: number, prev: PromptVersion | undefined) => PromptVersion): Promise<PromptVersion>;
+  /** Drop all persisted versions and runs. The primitive behind the UI's "clear history" action. */
+  clearHistory(): Promise<void>;
 }
 
 export class InMemoryStore implements PersistentStore {
@@ -56,5 +72,9 @@ export class InMemoryStore implements PersistentStore {
   }
   async putRun(record: RunRecord): Promise<void> {
     this.runs.set(record.versionId, record);
+  }
+  async clearHistory(): Promise<void> {
+    this.versions.length = 0;
+    this.runs.clear();
   }
 }

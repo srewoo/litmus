@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema, isSafeHttpUrl } from './schema';
+import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema, isSafeHttpUrl, ToolExpectationSchema } from './schema';
+
+describe('ToolExpectationSchema', () => {
+  it('should reject an all-empty expectation that would auto-pass 10/10', () => {
+    expect(ToolExpectationSchema.safeParse({}).success).toBe(false);
+    // Empty collections are also vacuous and must be rejected.
+    expect(ToolExpectationSchema.safeParse({ forbiddenTools: [], requiredArgs: {} }).success).toBe(false);
+  });
+  it('should accept an expectation asserting any single aspect', () => {
+    expect(ToolExpectationSchema.safeParse({ expectedTool: 'get_weather' }).success).toBe(true);
+    expect(ToolExpectationSchema.safeParse({ forbiddenTools: ['delete_account'] }).success).toBe(true);
+    expect(ToolExpectationSchema.safeParse({ requiredArgs: { city: 'Paris' } }).success).toBe(true);
+  });
+});
 
 describe('parseSettings', () => {
   it('should apply defaults to an empty object', () => {
@@ -74,6 +87,21 @@ describe('isSafeHttpUrl (SSRF guard)', () => {
   it('should allow 172.x outside the 16-31 private band', () => {
     expect(isSafeHttpUrl('https://172.32.0.1/rpc')).toBe(true);
     expect(isSafeHttpUrl('https://172.15.0.1/rpc')).toBe(true);
+  });
+  it('should reject IPv4-mapped IPv6 loopback literals (dotted and hex forms)', () => {
+    expect(isSafeHttpUrl('http://[::ffff:127.0.0.1]/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[::ffff:7f00:1]/rpc')).toBe(false); // hex form of 127.0.0.1
+    expect(isSafeHttpUrl('http://[::FFFF:127.0.0.1]/rpc')).toBe(false); // case-insensitive prefix
+  });
+  it('should reject IPv4-mapped IPv6 link-local/metadata and private literals', () => {
+    expect(isSafeHttpUrl('http://[::ffff:169.254.169.254]/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[::ffff:a9fe:a9fe]/rpc')).toBe(false); // hex form of 169.254.169.254
+    expect(isSafeHttpUrl('http://[::ffff:10.0.0.5]/rpc')).toBe(false);
+    expect(isSafeHttpUrl('http://[::ffff:c0a8:101]/rpc')).toBe(false); // hex form of 192.168.1.1
+  });
+  it('should allow an IPv4-mapped PUBLIC address', () => {
+    expect(isSafeHttpUrl('https://[::ffff:8.8.8.8]/rpc')).toBe(true);
+    expect(isSafeHttpUrl('https://[::ffff:808:808]/rpc')).toBe(true); // hex form of 8.8.8.8
   });
   it('should reject IPv6 ULA and link-local literals', () => {
     expect(isSafeHttpUrl('http://[fc00::1]/rpc')).toBe(false);

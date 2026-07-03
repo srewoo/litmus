@@ -96,11 +96,24 @@ export function aggregateVerdicts(verdicts: readonly VerdictLike[]): AggregatedV
   const mean = scores.reduce((a, s) => a + s, 0) / scores.length;
   const spread: JudgeSpread = { count: scores.length, scores, min, max, stdev: stdev(scores, mean) };
 
+  // Keep the rationale of the verdict whose score is closest to the median,
+  // so the explanation doesn't contradict the reported score (first.rationale
+  // could belong to an outlier). Deterministic tie-break: lowest index wins.
+  let nearest = 0;
+  let bestDelta = Math.abs(verdicts[0]!.score - score);
+  for (let i = 1; i < verdicts.length; i++) {
+    const delta = Math.abs(verdicts[i]!.score - score);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      nearest = i;
+    }
+  }
+
   const agreement = min === max ? `judges agreed at ${score}` : `${verdicts.length} judges: median ${score} (${min}–${max}, σ${spread.stdev})`;
   const dimensions = aggregateDimensions(verdicts);
   return {
     score,
-    rationale: `${first.rationale} · ${agreement}`,
+    rationale: `${verdicts[nearest]!.rationale} · ${agreement}`,
     ...(dimensions ? { dimensions } : {}),
     spread,
   };

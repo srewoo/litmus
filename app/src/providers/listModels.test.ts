@@ -56,4 +56,16 @@ describe('fetchModels', () => {
     const fetchImpl = async (): Promise<FetchResponse> => ({ ok: false, status: 401, body: null, text: async () => 'nope' });
     await expect(fetchModels('anthropic', 'bad', fetchImpl)).rejects.toBeInstanceOf(ProviderError);
   });
+
+  it('should throw a ProviderError (not a raw SyntaxError) on a 200 with a non-JSON body', async () => {
+    // A proxy returning an HTML error page with a 200 must not leak a bare
+    // SyntaxError that breaks `instanceof ProviderError` handling upstream.
+    const fetchImpl = async (): Promise<FetchResponse> => ({
+      ok: true,
+      status: 200,
+      body: null,
+      text: async () => '<html><body>502 Bad Gateway</body></html>',
+    });
+    await expect(fetchModels('openai', 'sk', fetchImpl)).rejects.toBeInstanceOf(ProviderError);
+  });
 });

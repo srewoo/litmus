@@ -81,6 +81,34 @@ describe('HttpTransport.request', () => {
     expect(seen).toEqual(['', 'abc']); // first had none, second echoed it
   });
 
+  it('close() DELETEs the session endpoint with the mcp-session-id header', async () => {
+    const calls: Array<{ method: string; sessionId: string | undefined }> = [];
+    const fetchImpl = async (_url: string, init: FetchInit) => {
+      calls.push({ method: init.method, sessionId: init.headers['mcp-session-id'] });
+      const id = (JSON.parse(init.body ?? '{}') as { id?: number }).id ?? 0;
+      return jsonResponse({ jsonrpc: '2.0', id, result: {} }, { 'mcp-session-id': 'abc' });
+    };
+    const t = createTransport(SERVER, { fetchImpl });
+    await t.request(makeRequest(1, 'initialize')); // establishes the session
+    await t.close!();
+    const del = calls.find((c) => c.method === 'DELETE');
+    expect(del).toBeDefined();
+    expect(del?.sessionId).toBe('abc'); // teardown echoes the session id
+  });
+
+  it('close() is a no-op when no session was established', async () => {
+    let deleteCalls = 0;
+    const fetchImpl = async (_url: string, init: FetchInit) => {
+      if (init.method === 'DELETE') deleteCalls += 1;
+      const id = (JSON.parse(init.body ?? '{}') as { id?: number }).id ?? 0;
+      return jsonResponse({ jsonrpc: '2.0', id, result: {} }); // no mcp-session-id header
+    };
+    const t = createTransport(SERVER, { fetchImpl });
+    await t.request(makeRequest(1, 'ping'));
+    await t.close!();
+    expect(deleteCalls).toBe(0);
+  });
+
   it('sends the Authorization header when configured', async () => {
     let auth = '';
     const fetchImpl = async (_url: string, init: FetchInit) => {

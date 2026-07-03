@@ -81,6 +81,17 @@ export class McpClient {
     return toCallResult(await this.call('tools/call', { name, arguments: args ?? {} }));
   }
 
+  /**
+   * Terminate the server session and release transport resources. Idempotent and
+   * best-effort — callers issue this in a `finally` after a scenario/sample so a
+   * long run does not leak one live MCP session per case. Clears the cached
+   * handshake so a reused client re-handshakes on the next `connect()`.
+   */
+  async close(): Promise<void> {
+    this.handshake = undefined;
+    if (this.transport.close) await this.transport.close();
+  }
+
   private async call(method: string, params?: unknown): Promise<unknown> {
     const res = await this.transport.request(makeRequest(this.nextId(), method, params));
     return unwrap(method, res);

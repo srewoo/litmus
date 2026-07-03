@@ -79,16 +79,11 @@ export async function runLoopPass(input: PassInput, deps: LoopDeps): Promise<Pas
     signal: deps.signal,
   });
 
-  const fixes = await suggestFixes(input.systemPrompt, cases, outcome.results, {
-    provider: deps.judgeProvider,
-    apiKey: deps.judgeKey,
-    model: deps.auxModel,
-    passThreshold: deps.passThreshold,
-    fetchImpl: deps.fetchImpl,
-    clock: deps.clock,
-    signal: deps.signal,
-  });
-
+  // Persist the version + run BEFORE computing fixes: the eval is fully paid
+  // for by this point, and suggestFixes is an LLM call that can throw. Losing a
+  // completed run because the (advisory) fixer failed would be the costliest
+  // possible failure, so persistence comes first and fixes degrade gracefully.
+  //
   // Atomic index allocation + persist (see PersistentStore.appendVersion) so
   // concurrent passes can't collide on the same version index/id.
   const version = await deps.store.appendVersion((index) => ({
@@ -105,6 +100,23 @@ export async function runLoopPass(input: PassInput, deps: LoopDeps): Promise<Pas
     results: outcome.results,
     createdAt: deps.now,
   });
+
+  // Fixes are advisory. A fixer failure must never discard the persisted run —
+  // degrade to no suggestions instead.
+  let fixes: Fix[] = [];
+  try {
+    fixes = await suggestFixes(input.systemPrompt, cases, outcome.results, {
+      provider: deps.judgeProvider,
+      apiKey: deps.judgeKey,
+      model: deps.auxModel,
+      passThreshold: deps.passThreshold,
+      fetchImpl: deps.fetchImpl,
+      clock: deps.clock,
+      signal: deps.signal,
+    });
+  } catch {
+    fixes = [];
+  }
 
   return { version, cases, outcome, fixes };
 }

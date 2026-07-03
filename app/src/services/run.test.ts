@@ -262,6 +262,63 @@ describe('runEval', () => {
     expect(results[0]).toMatchObject({ caseId: 'm1', passed: true });
   });
 
+  it('should terminate the MCP session after a scenario completes (no leaked session)', async () => {
+    let deleteCalls = 0;
+    const mcpFetch: FetchLike = async (_url, init) => {
+      if (init.method === 'DELETE') { deleteCalls++; return { ok: true, status: 200, body: null, headers: { get: () => null }, text: async () => '' }; }
+      const msg = JSON.parse(init.body ?? '{}') as { id: number; method: string };
+      const json = (result: unknown): FetchResponse => ({
+        ok: true, status: 200, body: null,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'application/json' : n.toLowerCase() === 'mcp-session-id' ? 'sess-1' : null) },
+        text: async () => JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }),
+      });
+      if (msg.method === 'initialize') return json({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } });
+      if (msg.method === 'tools/list') return json({ tools: [{ name: 'get_weather', inputSchema: { type: 'object' } }] });
+      return { ok: true, status: 202, body: null, headers: { get: () => null }, text: async () => '' };
+    };
+    const agentTarget: Provider = { id: 'openai', async chat() { return { text: 'Wear a jacket.', timing }; } };
+    const servers: McpServerConfig[] = [{ id: 'srv', name: 'demo', url: 'https://h/mcp', transport: 'http' }];
+    const scenarioCase: EvalCase = {
+      id: 'm1', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [], maxSteps: 3, successContains: ['jacket'], mcpServerId: 'srv' },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], {
+      ...baseDeps, targetProvider: agentTarget, mcpServers: servers, fetchImpl: mcpFetch,
+      permissions: { contains: async () => true, request: async () => true },
+    });
+    expect(results[0]).toMatchObject({ caseId: 'm1', passed: true });
+    expect(deleteCalls).toBe(1); // session torn down exactly once
+  });
+
+  it('should terminate the MCP session even when the scenario case throws', async () => {
+    let deleteCalls = 0;
+    const mcpFetch: FetchLike = async (_url, init) => {
+      if (init.method === 'DELETE') { deleteCalls++; return { ok: true, status: 200, body: null, headers: { get: () => null }, text: async () => '' }; }
+      const msg = JSON.parse(init.body ?? '{}') as { id: number; method: string };
+      const json = (result: unknown): FetchResponse => ({
+        ok: true, status: 200, body: null,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'application/json' : n.toLowerCase() === 'mcp-session-id' ? 'sess-1' : null) },
+        text: async () => JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }),
+      });
+      if (msg.method === 'initialize') return json({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } });
+      if (msg.method === 'tools/list') return json({ tools: [{ name: 'get_weather', inputSchema: { type: 'object' } }] });
+      return { ok: true, status: 202, body: null, headers: { get: () => null }, text: async () => '' };
+    };
+    // Target throws AFTER connect/discovery, so the scenario body fails inside the finally-wrapped block.
+    const throwingTarget: Provider = { id: 'openai', async chat() { throw new Error('provider boom'); } };
+    const servers: McpServerConfig[] = [{ id: 'srv', name: 'demo', url: 'https://h/mcp', transport: 'http' }];
+    const scenarioCase: EvalCase = {
+      id: 'm1', category: 'typical', input: 'x', pinned: false,
+      scenario: { goal: 'g', tools: [], maxSteps: 3, successContains: ['jacket'], mcpServerId: 'srv' },
+    };
+    const { results } = await runEval('SYS', [scenarioCase], {
+      ...baseDeps, targetProvider: throwingTarget, mcpServers: servers, fetchImpl: mcpFetch,
+      permissions: { contains: async () => true, request: async () => true },
+    });
+    expect(results[0]?.passed).toBe(false); // the throw is captured as a failed result
+    expect(deleteCalls).toBe(1); // session still torn down despite the throw
+  });
+
   it('should refuse an MCP-backed scenario whose origin is not authorized', async () => {
     const agentTarget: Provider = { id: 'openai', async chat() { return { text: 'Wear a jacket.', timing }; } };
     const servers: McpServerConfig[] = [{ id: 'srv', name: 'demo', url: 'https://h/mcp', transport: 'http' }];

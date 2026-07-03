@@ -67,4 +67,16 @@ export class IndexedDbStore implements PersistentStore {
     await promisifyRequest(db.transaction(RUNS_STORE, 'readwrite').objectStore(RUNS_STORE).put(record));
     db.close();
   }
+  async clearHistory(): Promise<void> {
+    const db = await openDb();
+    try {
+      const tx = db.transaction([VERSIONS_STORE, RUNS_STORE], 'readwrite');
+      await Promise.all([
+        promisifyRequest(tx.objectStore(VERSIONS_STORE).clear()),
+        promisifyRequest(tx.objectStore(RUNS_STORE).clear()),
+      ]);
+    } finally {
+      db.close();
+    }
+  }
 }

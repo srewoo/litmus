@@ -30,11 +30,13 @@ import type { Fix } from '../services/fixes';
 import { applyFixes } from '../services/applyFixes';
 import type { RunOutcome } from '../services/run';
 import { estimateRun, exceedsCap, formatUsd } from '../core/cost';
+import type { CostEstimate } from '../core/cost';
 import { aggregateDimensions } from '../core/dimensions';
 import { buildAxis, describeComparison } from '../core/litmusAxis';
 import { buildMarkdownReport, buildJsonReport } from '../core/report';
 import type { ReportEntry } from '../core/report';
-import type { RunRecord } from '../platform/store';
+import { QuotaExceededError } from '../platform/store';
+import type { PersistentStore, RunRecord } from '../platform/store';
 import { round1 } from '../shared/num';
 import { MODEL_CATALOG, PROVIDER_LABEL, PROVIDER_ORDER, DEFAULT_TARGET_VALUE } from '../core/models';
 import type { Settings } from '../shared/schema';
@@ -133,11 +135,139 @@ function sessionKey(ctx: Awaited<ReturnType<typeof wiring>>): string {
 }
 
 /**
+ * The tool catalog to send to the target for THIS run. Tools only belong to
+ * tool/agent mode; in quality mode a stale catalog (left over from a prior tool
+ * run or a restored session) must NOT leak into the target request (P2).
+ */
+export function toolsForMode(mode: AppState['mode'], tools: readonly ToolDef[]): ToolDef[] {
+  return mode === 'tools' ? [...tools] : [];
+}
+
+/** Inputs for a run-cost estimate — the fields that shape samples/judge/fixes calls. */
+export interface RunEstimateInputs {
+  readonly mode: AppState['mode'];
+  readonly cases: readonly EvalCase[];
+  readonly samples: number;
+  readonly judgeSamples: number;
+  readonly targetModel: string;
+  readonly auxModel: string;
+  readonly spendCapUsd: number;
+}
+
+/**
+ * Estimate a run's cost + whether it exceeds the spend cap. Single source of truth
+ * so the Cases screen, the express path, AND onRun all price identically — onRun
+ * must re-check because samples/cap can change in Settings after the Cases screen
+ * disabled the button, leaving a stale-enabled Run that would overspend (P2).
+ */
+export function estimateRunCost(i: RunEstimateInputs): { est: CostEstimate; over: boolean } {
+  const samples = Math.max(1, i.samples);
+  const est =
+    i.mode === 'tools'
+      ? estimateRun({
+          caseCount: i.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
+          targetModel: i.targetModel,
+          judgeModel: i.auxModel,
+          analyzerModel: i.auxModel,
+          includeAnalysis: false,
+          includeEvalGen: false,
+          includeJudge: false,
+          includeFixes: false,
+          avgInputTokens: 600,
+          avgOutputTokens: 400,
+        })
+      : estimateRun({
+          caseCount: i.cases.length * samples,
+          targetModel: i.targetModel,
+          judgeModel: i.auxModel,
+          analyzerModel: i.auxModel,
+          includeAnalysis: false,
+          includeEvalGen: false,
+          includeFixes: true,
+          judgeSamples: i.judgeSamples,
+          avgInputTokens: 600,
+          avgOutputTokens: 400,
+        });
+  return { est, over: exceedsCap(est, i.spendCapUsd) };
+}
+
+// Serializes settings read-modify-write ops. Each of onSaveSettings/onLoadModels/
+// onSaveKey does loadSettings→saveSettings; unserialized, a slow onLoadModels
+// racing a Save reads a stale blob and its write silently reverts the other's
+// update. Chaining every mutation onto this tail (same pattern as the store's
+// mutationTail) makes them run one-at-a-time, so no update is lost (P1, bug 5).
+let settingsTail: Promise<unknown> = Promise.resolve();
+
+/** Run `op` after all previously-queued settings mutations complete. */
+export function enqueueSettings<T>(op: () => Promise<T>): Promise<T> {
+  const run = settingsTail.then(op, op);
+  settingsTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+// User-facing status when durable persistence fails on a full store: the run's
+// results are still shown (they were paid for), but nothing was saved (P1, 7a).
+export const QUOTA_STATUS = 'History storage is full — clear history to continue. Your results are shown but were not saved.';
+
+/**
+ * Persist a completed run (version + run record) through the store, degrading
+ * gracefully on a full store: a QuotaExceededError is caught and reported via the
+ * return flag so the caller can still render the paid-for results. Any other
+ * error propagates. Returns the appended version (or null if append itself failed).
+ */
+export async function persistRunTo(
+  target: PersistentStore,
+  build: (index: number, prev: PromptVersion | undefined) => PromptVersion,
+  makeRun: (version: PromptVersion) => RunRecord,
+): Promise<{ version: PromptVersion | null; quota: boolean }> {
+  let version: PromptVersion | null = null;
+  try {
+    version = await target.appendVersion(build);
+    await target.putRun(makeRun(version));
+    return { version, quota: false };
+  } catch (err) {
+    if (err instanceof QuotaExceededError) return { version, quota: true };
+    throw err;
+  }
+}
+
+// Re-entrancy guard for session restore. While restoring, persistSession() is a
+// no-op; restoreSession() drives its state mutations through runRestore() and
+// persists ONCE afterwards. Without this, a persist triggered mid-restore (e.g.
+// setMode → persistSession) snapshots suiteKey/casesKey while they're still null
+// and reads the target <select> before it's set, clobbering the good snapshot (P1).
+let _restoring = false;
+
+/** True while restoreSession() is applying a snapshot — used to suppress persistence. */
+export function isRestoring(): boolean {
+  return _restoring;
+}
+
+/**
+ * Run `mutate` with persistence suppressed, then fire `persist` exactly once after
+ * all state (suiteKey/casesKey/target) is in place. Any persist attempted inside
+ * `mutate` sees isRestoring() === true and no-ops, so it can't capture half-restored state.
+ */
+export function runRestore(mutate: () => void, persist: () => void): void {
+  _restoring = true;
+  try {
+    mutate();
+  } finally {
+    _restoring = false;
+  }
+  persist();
+}
+
+/**
  * Persist the regenerable artifacts (analysis, rubrics, cases) + their reuse keys
  * to chrome.storage.session, so reopening the side panel within the same browser
  * session reuses them instead of re-calling the model. Fire-and-forget.
  */
 function persistSession(): void {
+  if (_restoring) return;
   void saveSnapshot(session, {
     prompt: state.prompt,
     targetValue: (el('target') as HTMLSelectElement).value,
@@ -157,31 +287,36 @@ function persistSession(): void {
 async function restoreSession(): Promise<void> {
   const snap = await loadSnapshot(session);
   if (!snap || !snap.prompt) return;
-  state.prompt = snap.prompt;
-  state.analysis = snap.analysis;
-  state.dimensions = snap.dimensions;
-  state.rubrics = snap.rubrics;
-  state.activeDimension = snap.activeDimension;
-  state.cases = snap.cases;
-  state.tools = snap.tools ?? [];
-  if (snap.mode) setMode(snap.mode);
-  applyOutputType();
-  suiteKey = snap.suiteKey;
-  casesKey = snap.casesKey;
-  (el('prompt') as HTMLTextAreaElement).value = snap.prompt;
-  const targetSel = el('target') as HTMLSelectElement;
-  if (snap.targetValue) {
-    targetSel.value = snap.targetValue;
-    if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
-  }
-  // Restore the tool-defs editor + dropdown so tool tests survive a reopen.
-  if (state.tools.length) {
-    (el('toolDefs') as HTMLTextAreaElement).value = JSON.stringify(state.tools, null, 2);
-    const status = el('toolDefsStatus');
-    status.textContent = `✓ ${state.tools.length} tool${state.tools.length === 1 ? '' : 's'} defined`;
-    status.className = 'toolstatus ok';
-  }
-  populateExpectedToolSelect();
+  // All mutations run with persistence suppressed so an inner persist (e.g.
+  // setMode → persistSession) can't snapshot null reuse keys / an unset target.
+  // suiteKey/casesKey/target are restored BEFORE the single trailing persist.
+  runRestore(() => {
+    state.prompt = snap.prompt;
+    state.analysis = snap.analysis;
+    state.dimensions = snap.dimensions;
+    state.rubrics = snap.rubrics;
+    state.activeDimension = snap.activeDimension;
+    state.cases = snap.cases;
+    state.tools = snap.tools ?? [];
+    suiteKey = snap.suiteKey;
+    casesKey = snap.casesKey;
+    (el('prompt') as HTMLTextAreaElement).value = snap.prompt;
+    const targetSel = el('target') as HTMLSelectElement;
+    if (snap.targetValue) {
+      targetSel.value = snap.targetValue;
+      if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
+    }
+    if (snap.mode) setMode(snap.mode);
+    applyOutputType();
+    // Restore the tool-defs editor + dropdown so tool tests survive a reopen.
+    if (state.tools.length) {
+      (el('toolDefs') as HTMLTextAreaElement).value = JSON.stringify(state.tools, null, 2);
+      const status = el('toolDefsStatus');
+      status.textContent = `✓ ${state.tools.length} tool${state.tools.length === 1 ? '' : 's'} defined`;
+      status.className = 'toolstatus ok';
+    }
+    populateExpectedToolSelect();
+  }, persistSession);
 }
 
 // `bare` controls the option value: the target select needs "provider/model"; the
@@ -310,7 +445,7 @@ async function onSaveKey(): Promise<void> {
   const value = (el('apiKey') as HTMLInputElement).value.trim();
   if (!value) return setMessage('Enter a key first.', 'error');
   try {
-    await setKey(area, currentProvider(), value);
+    await enqueueSettings(() => setKey(area, currentProvider(), value));
     (el('apiKey') as HTMLInputElement).value = '';
     setMessage('');
     await refreshKeyState();
@@ -492,10 +627,14 @@ async function onQuickRun(): Promise<void> {
   show('run');
   el('runStatus').textContent = 'Auto-generating evaluation…';
   el('runProgress').textContent = '';
+  // Open the abort scope BEFORE the paid generation calls so Cancel aborts
+  // generation, not just the later eval run (bug 1). onRun() opens a fresh scope
+  // for the run phase after generation completes.
+  const ac = beginRun();
   try {
     const key = sessionKey(ctx);
     if (suiteKey !== key || Object.keys(state.rubrics).length === 0) {
-      const suite = await generateEvalSuite(state.prompt, suiteDeps(ctx), undefined, (dim, i, t) =>
+      const suite = await generateEvalSuite(state.prompt, { ...suiteDeps(ctx), signal: ac.signal }, undefined, (dim, i, t) =>
         (el('runStatus').textContent = `Writing rubric ${i}/${t}: ${dim}…`),
       );
       state.dimensions = suite.dimensions;
@@ -503,25 +642,21 @@ async function onQuickRun(): Promise<void> {
       suiteKey = key;
     }
     el('runStatus').textContent = 'Generating test cases…';
-    await ensureCases(false);
+    await ensureCases(false, ac.signal);
     persistSession();
     // Honor the spend cap on the express path too (the guided path gates on the
     // Cases screen, which this skips). Over cap → route to Cases so the user can
     // trim or raise the cap instead of silently overspending.
-    const samples = Math.max(1, ctx.settings.samples);
-    const est = estimateRun({
-      caseCount: state.cases.length * samples,
-      targetModel: ctx.target.model,
-      judgeModel: ctx.w.auxModel,
-      analyzerModel: ctx.w.auxModel,
-      includeAnalysis: false,
-      includeEvalGen: false,
-      includeFixes: true,
+    const { est, over } = estimateRunCost({
+      mode: state.mode,
+      cases: state.cases,
+      samples: ctx.settings.samples,
       judgeSamples: ctx.settings.judgeSamples,
-      avgInputTokens: 600,
-      avgOutputTokens: 400,
+      targetModel: ctx.target.model,
+      auxModel: ctx.w.auxModel,
+      spendCapUsd: ctx.settings.spendCapUsd,
     });
-    if (exceedsCap(est, ctx.settings.spendCapUsd)) {
+    if (over) {
       await renderCasesView();
       return setMessage(
         `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(ctx.settings.spendCapUsd)} cap — trim cases or raise the cap in Settings, then Run.`,
@@ -530,8 +665,11 @@ async function onQuickRun(): Promise<void> {
     }
     await onRun();
   } catch (err) {
-    setMessage(describeError(err), 'error');
+    if (ac.signal.aborted) setMessage('Generation canceled — no run started.');
+    else setMessage(describeError(err), 'error');
     show('capture');
+  } finally {
+    if (runAbort === ac) runAbort = null;
   }
 }
 
@@ -857,7 +995,7 @@ async function onCheckCoverage(): Promise<void> {
   }
 }
 
-async function ensureCases(force: boolean): Promise<void> {
+async function ensureCases(force: boolean, signal?: AbortSignal): Promise<void> {
   const ctx = await wiring();
   const key = sessionKey(ctx);
   // Reuse cases already generated for this prompt + models unless forced.
@@ -866,7 +1004,7 @@ async function ensureCases(force: boolean): Promise<void> {
     state.prompt,
     ctx.target,
     DEFAULT_CASE_COUNT,
-    { provider: ctx.w.judgeProvider, apiKey: ctx.w.judgeKey, model: ctx.w.auxModel },
+    { provider: ctx.w.judgeProvider, apiKey: ctx.w.judgeKey, model: ctx.w.auxModel, ...(signal ? { signal } : {}) },
     analysisHint(),
   );
   casesKey = key;
@@ -878,36 +1016,18 @@ async function renderCasesView(): Promise<boolean> {
   html('casesHost', casesListHtml(state.cases));
   const { settings, target, w } = await wiring();
   const toolsMode = state.mode === 'tools';
-  const samples = Math.max(1, settings.samples);
-  // Tool/agent cases are scored deterministically (no judge, no fixes pass). An
-  // agent scenario is a multi-turn loop, so it costs up to maxSteps model calls;
-  // a tool-assertion case is a single call. Quality cases keep the judge+fixes shape.
-  const est = toolsMode
-    ? estimateRun({
-        caseCount: state.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
-        targetModel: target.model,
-        judgeModel: w.auxModel,
-        analyzerModel: w.auxModel,
-        includeAnalysis: false,
-        includeEvalGen: false,
-        includeJudge: false,
-        includeFixes: false,
-        avgInputTokens: 600,
-        avgOutputTokens: 400,
-      })
-    : estimateRun({
-        caseCount: state.cases.length * samples,
-        targetModel: target.model,
-        judgeModel: w.auxModel,
-        analyzerModel: w.auxModel,
-        includeAnalysis: false,
-        includeEvalGen: false,
-        includeFixes: true,
-        judgeSamples: settings.judgeSamples,
-        avgInputTokens: 600,
-        avgOutputTokens: 400,
-      });
-  const over = exceedsCap(est, settings.spendCapUsd);
+  // Tool/agent cases are scored deterministically (no judge, no fixes pass); quality
+  // cases keep the judge+fixes shape. estimateRunCost is the single source of truth
+  // shared with onRun + the express path, so all three price identically (bug 6).
+  const { est, over } = estimateRunCost({
+    mode: state.mode,
+    cases: state.cases,
+    samples: settings.samples,
+    judgeSamples: settings.judgeSamples,
+    targetModel: target.model,
+    auxModel: w.auxModel,
+    spendCapUsd: settings.spendCapUsd,
+  });
   el('costLine').textContent = `${formatUsd(est.estUsd)} · ${est.totalCalls} calls · cap ${formatUsd(settings.spendCapUsd)}`;
   (el('runBtn') as HTMLButtonElement).disabled = over;
   // Tool/agent mode tests tools, not text outputs — hide the text-case generators.
@@ -1124,10 +1244,26 @@ async function onAddScenario(): Promise<void> {
 
 // Active run's abort controller, so the Cancel button can halt an in-flight run
 // (providers honor the signal mid-stream). Null when no run is in progress.
+// It is assigned BEFORE the express path's paid generation calls (not just the
+// eval-run) so Cancel actually aborts generation too, instead of no-op'ing on a
+// still-null controller while claiming "Canceling…" (P1, bug 1).
 let runAbort: AbortController | null = null;
 
-function onCancelRun(): void {
+/** Start (or restart) the shared run/generation abort scope and return its controller. */
+export function beginRun(): AbortController {
+  runAbort = new AbortController();
+  return runAbort;
+}
+
+/** Abort the active run/generation scope, if any. Returns whether one was active. */
+export function abortActiveRun(): boolean {
+  const active = runAbort !== null;
   runAbort?.abort();
+  return active;
+}
+
+function onCancelRun(): void {
+  abortActiveRun();
   el('runStatus').textContent = 'Canceling…';
 }
 
@@ -1140,12 +1276,31 @@ async function onRun(): Promise<void> {
     );
   }
   show('run');
-  const ac = new AbortController();
-  runAbort = ac;
+  const ac = beginRun();
   const total = state.cases.length;
   el('runProgress').textContent = `0 / ${total} cases`;
   try {
     const { settings, target, w } = await wiring();
+    // Re-estimate against CURRENT settings + cap: the Cases screen only disabled
+    // the Run button at render time, so raising samples in Settings afterwards
+    // could otherwise slip an over-cap run through (bug 6).
+    const { est, over } = estimateRunCost({
+      mode: state.mode,
+      cases: state.cases,
+      samples: settings.samples,
+      judgeSamples: settings.judgeSamples,
+      targetModel: target.model,
+      auxModel: w.auxModel,
+      spendCapUsd: settings.spendCapUsd,
+    });
+    if (over) {
+      await renderCasesView();
+      setMessage(
+        `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(settings.spendCapUsd)} cap — trim cases or raise the cap in Settings.`,
+        'error',
+      );
+      return;
+    }
     el('runStatus').textContent = `Running ${total} cases on ${target.model}…`;
     const outcome = await runEval(state.prompt, state.cases, {
       target,
@@ -1163,7 +1318,9 @@ async function onRun(): Promise<void> {
       onProgress: (done, t) => {
         el('runProgress').textContent = `${done} / ${t} cases`;
       },
-      ...(state.tools.length ? { tools: state.tools } : {}),
+      // Tools belong to tool/agent mode only — never leak a stale catalog into a
+      // quality-mode run (bug 3).
+      ...(toolsForMode(state.mode, state.tools).length ? { tools: toolsForMode(state.mode, state.tools) } : {}),
       ...(settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}),
     });
     state.outcome = outcome;
@@ -1186,7 +1343,7 @@ async function onRun(): Promise<void> {
     // Atomic index allocation + persist (PersistentStore.appendVersion): the
     // note/id are derived from the same snapshot that assigns the index, inside
     // one critical section, so a version can't get a colliding index/id.
-    const version = await store.appendVersion((index, prev) => {
+    const build = (index: number, prev: PromptVersion | undefined): PromptVersion => {
       // Truthful note: distinguish a prompt edit, a re-run, and a same-prompt
       // model swap (the model-comparison case) so the timeline tells the right story.
       const samePrompt = Boolean(prev && prev.text === state.prompt);
@@ -1208,8 +1365,8 @@ async function onRun(): Promise<void> {
         createdAt: Date.now(),
         target: { provider: target.provider, model: target.model },
       };
-    });
-    await store.putRun({
+    };
+    const makeRun = (version: PromptVersion): RunRecord => ({
       versionId: version.id,
       summary: outcome.summary,
       results: outcome.results,
@@ -1217,10 +1374,15 @@ async function onRun(): Promise<void> {
       ...(state.rubricHealth ? { rubricHealth: state.rubricHealth } : {}),
       createdAt: version.createdAt,
     });
-    state.lastVersionId = version.id;
+    // Persist, degrading gracefully if the store is full: the user paid for these
+    // results, so still show them and surface an actionable status (bug 7a).
+    const { version, quota } = await persistRunTo(store, build, makeRun);
+    if (version) state.lastVersionId = version.id;
 
-    renderResults(version.index);
+    const shownIndex = version?.index ?? (await store.getVersions()).length + 1;
+    renderResults(shownIndex);
     show('results');
+    if (quota) setMessage(QUOTA_STATUS, 'error');
   } catch (err) {
     if (ac.signal.aborted) {
       setMessage('Run canceled — no version saved.');
@@ -1322,16 +1484,21 @@ const axisRuns = new Map<string, RunRecord | null>();
 // Which screen the Versions view was opened from, so Back returns there.
 let versionsReturnTo: View = 'results';
 
-async function showVersions(from: View = 'results'): Promise<void> {
-  versionsReturnTo = from;
-  const versions = await store.getVersions();
-  axisVersions = versions;
-  axisRuns.clear();
+/**
+ * Build the timeline view-models, computing each version's delta against the
+ * PREVIOUS version's overall — but only when that previous version actually has a
+ * run. Comparing against a run-less version's implicit 0 produced a spurious
+ * "▲ +8.2" (bug 4); such a comparison is skipped (delta null = "no comparison").
+ */
+export function buildVersionVMs(
+  versions: readonly PromptVersion[],
+  runOf: (id: string) => RunRecord | null,
+  currentId: string | null,
+): VersionVM[] {
   const vms: VersionVM[] = [];
-  let prev: number | null = null;
+  let prev: number | null = null; // previous version's overall, or null if it had no run
   for (const v of versions) {
-    const run = await store.getRun(v.id);
-    axisRuns.set(v.id, run);
+    const run = runOf(v.id);
     const overall = run?.summary.overall ?? 0;
     vms.push({
       label: `v${v.index}`,
@@ -1339,12 +1506,23 @@ async function showVersions(from: View = 'results'): Promise<void> {
       overall,
       passLabel: run ? `${run.summary.passCount}/${run.summary.total}` : '—',
       avgSeconds: run ? round1(run.summary.speed.avgResponseMs / 1000) : 0,
-      delta: prev === null ? null : round1(overall - prev),
-      current: v.id === state.lastVersionId,
+      // Only compare when both this version and the previous one have a real score.
+      delta: prev === null || !run ? null : round1(overall - prev),
+      current: v.id === currentId,
       ...(v.target ? { model: v.target.model } : {}),
     });
-    prev = overall;
+    prev = run ? overall : null;
   }
+  return vms;
+}
+
+async function showVersions(from: View = 'results'): Promise<void> {
+  versionsReturnTo = from;
+  const versions = await store.getVersions();
+  axisVersions = versions;
+  axisRuns.clear();
+  for (const v of versions) axisRuns.set(v.id, await store.getRun(v.id));
+  const vms = buildVersionVMs(versions, (id) => axisRuns.get(id) ?? null, state.lastVersionId);
   html('versionsHost', versionsTimelineHtml(vms));
 
   // Compare pickers: default to baseline (A) vs latest (B), preserving the old
@@ -1354,6 +1532,19 @@ async function showVersions(from: View = 'results'): Promise<void> {
   fillCompareSelect(el('compareB') as HTMLSelectElement, versions[versions.length - 1]?.id ?? '');
   renderAxisPair();
   show('versions');
+}
+
+/**
+ * Wipe all persisted versions + runs (store.clearHistory), reset the current
+ * pointer, and re-render the (now empty) versions view (bug 7b). The button is
+ * created dynamically in init() since the static HTML has no such control.
+ */
+async function onClearHistory(): Promise<void> {
+  await store.clearHistory();
+  state.lastVersionId = null;
+  await showVersions(versionsReturnTo);
+  await refreshVersionPicker();
+  setMessage('History cleared — all versions and runs removed.');
 }
 
 /** Fill a compare dropdown with every version, selecting `selectedId`. */
@@ -1587,7 +1778,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
 
 async function onSaveSettings(): Promise<void> {
   try {
-    const current = await loadSettings(area);
     const customRaw = (el('customModel') as HTMLInputElement).value.trim();
     if (customRaw) {
       try {
@@ -1596,7 +1786,9 @@ async function onSaveSettings(): Promise<void> {
         return setSettingsMsg('Custom model must be "provider/model", e.g. openai/gpt-5.4.', 'error');
       }
     }
-    const next = mergeSettings(current, {
+    // Snapshot the form fields, then run the read-modify-write inside the settings
+    // queue so a concurrent onLoadModels/onSaveKey can't clobber this save (bug 5).
+    const patch = {
       keys: {
         openai: (el('keyOpenai') as HTMLInputElement).value,
         anthropic: (el('keyAnthropic') as HTMLInputElement).value,
@@ -1610,8 +1802,13 @@ async function onSaveSettings(): Promise<void> {
       samples: Number((el('samples') as HTMLInputElement).value),
       judgeSamples: Number((el('judgeSamples') as HTMLInputElement).value),
       concurrency: Number((el('concurrency') as HTMLInputElement).value),
+    };
+    const next = await enqueueSettings(async () => {
+      const current = await loadSettings(area);
+      const merged = mergeSettings(current, patch);
+      await saveSettings(area, merged);
+      return merged;
     });
-    await saveSettings(area, next);
     // Rebuild the capture dropdown (it may now include a custom model) and apply the default.
     const targetSel = el('target') as HTMLSelectElement;
     fillTargetSelect(targetSel, next);
@@ -1626,18 +1823,24 @@ async function onSaveSettings(): Promise<void> {
 }
 
 async function onLoadModels(): Promise<void> {
-  const s = await loadSettings(area);
-  const providers = (['openai', 'anthropic', 'google'] as ProviderId[]).filter((p) => s.keys[p]);
+  const s0 = await loadSettings(area);
+  const providers = (['openai', 'anthropic', 'google'] as ProviderId[]).filter((p) => s0.keys[p]);
   if (providers.length === 0) return setSettingsMsg('Save at least one API key first.', 'error');
   setSettingsMsg('Loading models from your key(s)…');
-  const available: { openai?: string[]; anthropic?: string[]; google?: string[] } = { ...s.availableModels };
   try {
-    for (const p of providers) {
-      const key = s.keys[p];
-      if (key) available[p] = await fetchModels(p, key);
-    }
-    const next: Settings = { ...s, availableModels: available };
-    await saveSettings(area, next);
+    // Re-read + save inside the settings queue so this write can't lose a
+    // concurrent onSaveSettings/onSaveKey update (bug 5).
+    const next = await enqueueSettings(async () => {
+      const s = await loadSettings(area);
+      const available: { openai?: string[]; anthropic?: string[]; google?: string[] } = { ...s.availableModels };
+      for (const p of providers) {
+        const key = s.keys[p];
+        if (key) available[p] = await fetchModels(p, key);
+      }
+      const merged: Settings = { ...s, availableModels: available };
+      await saveSettings(area, merged);
+      return merged;
+    });
     fillTargetSelect(el('defaultModel') as HTMLSelectElement, next);
     (el('defaultModel') as HTMLSelectElement).value = defaultValue(next);
     const jm = el('judgeModel') as HTMLSelectElement;
@@ -1777,6 +1980,14 @@ function init(): void {
   el('compareB').addEventListener('change', () => renderAxisPair());
   el('versionsBackBtn').addEventListener('click', () => show(versionsReturnTo));
   el('versionsEditBtn').addEventListener('click', () => goCapture());
+  // Clear-history control: created here (the static HTML has no such button) and
+  // appended to the Versions action row, so it survives without touching the HTML.
+  const clearHistoryBtn = document.createElement('button');
+  clearHistoryBtn.className = 'btn ghost';
+  clearHistoryBtn.type = 'button';
+  clearHistoryBtn.textContent = 'Clear history';
+  clearHistoryBtn.addEventListener('click', () => void onClearHistory());
+  el('versionsBackBtn').parentElement?.insertBefore(clearHistoryBtn, el('versionsEditBtn'));
   el('exportMd').addEventListener('click', () => void exportReport('md'));
   el('exportJson').addEventListener('click', () => void exportReport('json'));
   el('casesHost').addEventListener('click', (e) => {
@@ -1803,4 +2014,6 @@ function init(): void {
   })();
 }
 
-init();
+// Bootstrap only in a real document (the extension side panel). Guarded so the
+// module can be imported in a DOM-less test env to exercise its exported helpers.
+if (typeof document !== 'undefined') init();

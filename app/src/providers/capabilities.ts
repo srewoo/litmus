@@ -44,7 +44,10 @@ export function maxTokensField(provider: ProviderId, model: string): 'max_tokens
   return 'max_tokens';
 }
 
-const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search|babbage|davinci)/i;
+// `search(?!-preview)` filters embeddings/search helper ids while letting the
+// real chat-completions models `gpt-4o-search-preview` / `gpt-4o-mini-search-preview`
+// through (their token is `search-preview`, not a bare `search`).
+const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search(?!-preview)|babbage|davinci)/i;
 
 /** Whether a listed model is usable via chat completions (filters out non-chat OpenAI models). */
 export function isChatModel(provider: ProviderId, model: string): boolean {
@@ -66,8 +69,9 @@ export function isChatModel(provider: ProviderId, model: string): boolean {
 export function supportsTools(provider: ProviderId, model: string): boolean {
   if (provider === 'openai') {
     if (!isChatModel('openai', model)) return false;
-    // gpt-3.5-turbo supports tools, but the legacy gpt-3.5 base/instruct models do not.
-    if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
+    // gpt-3.5-turbo supports tools, but the legacy gpt-3.5 base/instruct models do
+    // not — gpt-3.5-turbo-instruct is a completions-only model with no function calling.
+    if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model) && !/-instruct/i.test(model);
     return true;
   }
   if (provider === 'anthropic') {

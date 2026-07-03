@@ -102,7 +102,13 @@ export function generateProbes(tool: McpToolDescriptor): { probes: SecurityProbe
   const probes: SecurityProbe[] = [];
   const notes: string[] = [];
 
-  probes.push({ kind: 'empty-args', toolName: tool.name, args: {}, description: 'no arguments supplied' });
+  // Only probe empty-args when the tool HAS required fields: for an all-optional
+  // schema, `{}` is schema-VALID, so accepting it is correct — not a vulnerability.
+  if (required.length > 0) {
+    probes.push({ kind: 'empty-args', toolName: tool.name, args: {}, description: 'no arguments supplied' });
+  } else {
+    notes.push(`${tool.name}: empty-args probe skipped (no required parameters — {} is schema-valid)`);
+  }
 
   for (const key of required) {
     const args = { ...base };
@@ -111,11 +117,15 @@ export function generateProbes(tool: McpToolDescriptor): { probes: SecurityProbe
   }
 
   for (const [key, spec] of Object.entries(props)) {
+    // A property with no declared `type` has nothing to violate — any value is
+    // schema-valid, so a "wrong-type" value is actually valid and a compliant
+    // server that accepts it would be falsely flagged accepted-invalid. Skip it.
+    if (spec.type === undefined) continue;
     probes.push({
       kind: 'type-fuzz',
       toolName: tool.name,
       args: { ...base, [key]: wrongValue(spec.type) },
-      description: `wrong type for "${key}" (declared ${spec.type ?? 'string'})`,
+      description: `wrong type for "${key}" (declared ${spec.type})`,
     });
   }
 

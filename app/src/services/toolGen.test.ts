@@ -45,6 +45,19 @@ describe('parseToolCases', () => {
   it('rejects malformed output', () => {
     expect(() => parseToolCases('{"cases":[{"category":"weird","input":"x"}]}')).toThrow();
   });
+
+  it('drops cases with no assertion so they can never auto-pass in assertToolCalls', () => {
+    const text = JSON.stringify({
+      cases: [
+        { category: 'typical', input: 'no assertion fields at all' },
+        { category: 'edge', input: 'empty collections only', forbiddenTools: [], requiredArgs: {} },
+        { category: 'typical', input: 'weather in Paris?', expectedTool: 'get_weather' },
+      ],
+    });
+    const cases = parseToolCases(text);
+    expect(cases).toHaveLength(1); // the two assertion-less cases are dropped, not failed
+    expect(cases[0]).toMatchObject({ id: 'case-1', input: 'weather in Paris?' });
+  });
 });
 
 describe('generateToolCases', () => {
@@ -67,7 +80,7 @@ describe('generateToolCases', () => {
     const provider: Provider = {
       id: 'openai',
       async chat() {
-        return { text: '{"cases":[{"category":"edge","input":"hmm"}]}', timing };
+        return { text: '{"cases":[{"category":"edge","input":"hmm","expectedTool":"get_weather"}]}', timing };
       },
     };
     const cases = await generateToolCases('SYS', tools, 1, { provider, apiKey: 'sk', model: 'm', makeId: (i) => `case-${i + 13}` });

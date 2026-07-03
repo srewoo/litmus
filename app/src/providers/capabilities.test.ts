@@ -74,10 +74,23 @@ describe('supportsTools', () => {
     expect(supportsTools('openai', 'gpt-3.5-turbo')).toBe(true);
   });
   it('should deny tools for non-tool OpenAI models', () => {
-    expect(supportsTools('openai', 'gpt-3.5-turbo-instruct')).toBe(true); // turbo variants do
     expect(supportsTools('openai', 'gpt-3.5')).toBe(false); // legacy base
     expect(supportsTools('openai', 'text-embedding-3-large')).toBe(false);
     expect(supportsTools('openai', 'whisper-1')).toBe(false);
+  });
+  it('should deny tools for gpt-3.5-turbo-instruct (completions-only) but allow gpt-3.5-turbo', () => {
+    // Regression: /^gpt-3\.5-turbo/ alone matched -instruct, wrongly reporting it tool-capable.
+    expect(supportsTools('openai', 'gpt-3.5-turbo-instruct')).toBe(false);
+    expect(supportsTools('openai', 'gpt-3.5-turbo')).toBe(true);
+    expect(supportsTools('openai', 'gpt-3.5-turbo-0125')).toBe(true);
+  });
+  it('should keep search-preview chat models tool-capable while denying non-chat search ids', () => {
+    // Regression: OPENAI_NON_CHAT dropped any id containing "search"; the real
+    // chat-completions search-preview models must survive.
+    expect(supportsTools('openai', 'gpt-4o-search-preview')).toBe(true);
+    expect(supportsTools('openai', 'gpt-4o-mini-search-preview')).toBe(true);
+    expect(isChatModel('openai', 'gpt-4o-search-preview')).toBe(true);
+    expect(isChatModel('openai', 'gpt-4o-mini-search-preview')).toBe(true);
   });
   it('should report tool support for Anthropic claude-3+ / claude-4', () => {
     expect(supportsTools('anthropic', 'claude-3-opus')).toBe(true);

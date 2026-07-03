@@ -48,6 +48,28 @@ describe('toContents', () => {
     ]);
     expect(contents).toEqual([{ role: 'user', parts: [{ text: 'hi' }] }]);
   });
+  it('should group parallel tool results into a single user turn (Gemini rejects consecutive user entries)', () => {
+    // An assistant turn with TWO parallel functionCalls yields two consecutive
+    // `tool` results; their functionResponse parts must land in ONE user turn.
+    const { contents } = toContents([
+      { role: 'user', content: 'weather + time in Paris?' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { name: 'get_weather', arguments: { city: 'Paris' } },
+          { name: 'get_time', arguments: { city: 'Paris' } },
+        ],
+      },
+      { role: 'tool', toolName: 'get_weather', content: '{"tempC":18}' },
+      { role: 'tool', toolName: 'get_time', content: '{"hour":14}' },
+    ]);
+    // [user text, model(2 functionCalls), user(2 functionResponses)] — no consecutive user turns.
+    expect(contents).toHaveLength(3);
+    const toolTurn = contents[2] as { role: string; parts: Array<{ functionResponse: { name: string } }> };
+    expect(toolTurn.role).toBe('user');
+    expect(toolTurn.parts.map((p) => p.functionResponse.name)).toEqual(['get_weather', 'get_time']);
+  });
 });
 
 describe('GoogleProvider.chat', () => {

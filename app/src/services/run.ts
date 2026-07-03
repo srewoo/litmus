@@ -95,29 +95,36 @@ async function scenarioCaseResult(systemPrompt: string, evalCase: EvalCase, deps
   // dispatches calls for real; otherwise the ADR 0002 mock path runs.
   const wired = scenario.mcpServerId
     ? await wireMcp(scenario.mcpServerId, deps)
-    : { tools: mockToolDefs(scenario), resolver: undefined };
+    : { tools: mockToolDefs(scenario), resolver: undefined, client: undefined };
 
-  const step = providerStep({
-    provider: deps.targetProvider,
-    apiKey: deps.targetKey,
-    model: deps.target.model,
-    tools: wired.tools,
-    fetchImpl: deps.fetchImpl,
-    clock: deps.clock,
-    signal: deps.signal,
-  });
-  const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal, wired.resolver);
-  const verdict = scoreScenario(trajectory, scenario);
-  const turnTimings = trajectory.steps.map((s) => s.timing).filter((t): t is Timing => t !== undefined);
-  return {
-    caseId: evalCase.id,
-    output: JSON.stringify(trajectory),
-    score: verdict.score,
-    passed: verdict.passed,
-    rationale: verdict.rationale,
-    timing: aggregateTrajectoryTiming(turnTimings), // summed across turns (ADR 0002)
-    dimensions: verdict.dimensions,
-  };
+  // Each scenario/sample opens its own MCP session; close it in a `finally` so a
+  // large run (samples × cases) does not leak one live session per case — including
+  // when the agent loop throws or the run is aborted mid-trajectory.
+  try {
+    const step = providerStep({
+      provider: deps.targetProvider,
+      apiKey: deps.targetKey,
+      model: deps.target.model,
+      tools: wired.tools,
+      fetchImpl: deps.fetchImpl,
+      clock: deps.clock,
+      signal: deps.signal,
+    });
+    const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal, wired.resolver);
+    const verdict = scoreScenario(trajectory, scenario);
+    const turnTimings = trajectory.steps.map((s) => s.timing).filter((t): t is Timing => t !== undefined);
+    return {
+      caseId: evalCase.id,
+      output: JSON.stringify(trajectory),
+      score: verdict.score,
+      passed: verdict.passed,
+      rationale: verdict.rationale,
+      timing: aggregateTrajectoryTiming(turnTimings), // summed across turns (ADR 0002)
+      dimensions: verdict.dimensions,
+    };
+  } finally {
+    await wired.client?.close();
+  }
 }
 
 function mockToolDefs(scenario: NonNullable<EvalCase['scenario']>): ToolDef[] {
@@ -129,7 +136,10 @@ function mockToolDefs(scenario: NonNullable<EvalCase['scenario']>): ToolDef[] {
 }
 
 /** Connect to the named MCP server, discover its tools, and build a live resolver. */
-async function wireMcp(serverId: string, deps: RunDeps): Promise<{ tools: ToolDef[]; resolver: ReturnType<typeof mcpResolver> }> {
+async function wireMcp(
+  serverId: string,
+  deps: RunDeps,
+): Promise<{ tools: ToolDef[]; resolver: ReturnType<typeof mcpResolver>; client: ReturnType<typeof connectMcp> }> {
   const config = (deps.mcpServers ?? []).find((s) => s.id === serverId);
   if (!config) throw new Error(`MCP server "${serverId}" is not configured`);
   // SECURITY (ADR 0003): the agent-run path is NOT inside a user gesture, so it
@@ -153,7 +163,7 @@ async function wireMcp(serverId: string, deps: RunDeps): Promise<{ tools: ToolDe
     ...(t.description ? { description: t.description } : {}),
     parameters: t.inputSchema,
   }));
-  return { tools, resolver: mcpResolver(client, discovered) };
+  return { tools, resolver: mcpResolver(client, discovered), client };
 }
 
 /**

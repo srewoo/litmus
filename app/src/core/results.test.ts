@@ -26,6 +26,30 @@ describe('foldSamples', () => {
     expect(folded.passed).toBe(false); // only 1 of 3 passed
     expect(folded.samples?.passRate).toBeCloseTo(1 / 3);
   });
+  it('honours each run\'s passed flag rather than re-thresholding its score', () => {
+    // Agent-scenario runs can score high yet fail deterministically (e.g. goal
+    // reached but an invalid-arg tool call → score 9.5, passed false).
+    const folded = foldSamples([result('c1', 9.5, false), result('c1', 9.5, false), result('c1', 9.5, true)], 6);
+    expect(folded.passed).toBe(false); // majority of runs FAILED despite high scores
+    expect(folded.samples?.passRate).toBeCloseTo(1 / 3);
+    expect(folded.score).toBe(9.5); // mean score is still reported
+  });
+  it('averages per-dimension scores across samples, tolerating runs without them', () => {
+    const runs: CaseResult[] = [
+      { ...result('c1', 8), dimensions: [{ dimension: 'tone', score: 8 }, { dimension: 'format', score: 6 }] },
+      { ...result('c1', 6), dimensions: [{ dimension: 'tone', score: 4 }] }, // format missing here
+      result('c1', 7), // no dimensions at all
+    ];
+    const folded = foldSamples(runs);
+    expect(folded.dimensions).toEqual([
+      { dimension: 'tone', score: 6 }, // mean(8, 4)
+      { dimension: 'format', score: 6 }, // only sample 1 scored it
+    ]);
+  });
+  it('keeps dimensions undefined when the first run has none', () => {
+    const folded = foldSamples([result('c1', 8), { ...result('c1', 6), dimensions: [{ dimension: 'tone', score: 5 }] }]);
+    expect(folded.dimensions).toBeUndefined();
+  });
 });
 
 describe('scorePasses', () => {

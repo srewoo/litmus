@@ -33,9 +33,12 @@ describe('callJson', () => {
     const result = await callJson(provider, { model: 'm', messages: [{ role: 'user', content: 'hi' }] }, opts, parse);
     expect(result).toEqual({ ok: true });
     expect(calls).toHaveLength(2);
-    // the retry appends a nudge message
-    expect(calls[1]?.messages.length).toBe(2);
-    expect(calls[1]?.messages[1]?.content).toContain('valid JSON');
+    // the retry appends the failed assistant turn AND the corrective nudge, so
+    // the model can see what it produced and no two user turns sit adjacent.
+    const retryMsgs = calls[1]?.messages ?? [];
+    expect(retryMsgs.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(retryMsgs[1]).toMatchObject({ role: 'assistant', content: 'not json' });
+    expect(retryMsgs[2]?.content).toContain('valid JSON');
   });
 
   it('should throw after exhausting retries', async () => {

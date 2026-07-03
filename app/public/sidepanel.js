@@ -4049,6 +4049,17 @@
 
   // src/shared/schema.ts
   var ProviderIdSchema = external_exports.enum(["openai", "anthropic", "google"]);
+  function isSafeIpv4Octets(octets) {
+    if (octets.some((o) => o > 255)) return false;
+    const [a, b] = octets;
+    if (a === 0) return false;
+    if (a === 10) return false;
+    if (a === 127) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    return true;
+  }
   function isSafeHttpUrl(url) {
     let parsed;
     try {
@@ -4062,19 +4073,20 @@
     if (host === "") return false;
     if (host === "localhost" || host.endsWith(".localhost")) return false;
     const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (ipv4) {
-      const octets = ipv4.slice(1).map((o) => Number(o));
-      if (octets.some((o) => o > 255)) return false;
-      const [a, b] = octets;
-      if (a === 0) return false;
-      if (a === 10) return false;
-      if (a === 127) return false;
-      if (a === 169 && b === 254) return false;
-      if (a === 172 && b >= 16 && b <= 31) return false;
-      if (a === 192 && b === 168) return false;
-      return true;
-    }
+    if (ipv4) return isSafeIpv4Octets(ipv4.slice(1).map((o) => Number(o)));
     if (host.includes(":")) {
+      const mapped = host.match(/^::ffff:(.+)$/);
+      if (mapped) {
+        const tail = mapped[1] ?? "";
+        const dotted = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+        if (dotted) return isSafeIpv4Octets(dotted.slice(1).map((o) => Number(o)));
+        const hexPair = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+        if (hexPair) {
+          const hi = parseInt(hexPair[1] ?? "0", 16);
+          const lo = parseInt(hexPair[2] ?? "0", 16);
+          return isSafeIpv4Octets([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+        }
+      }
       if (host === "::1" || host === "::") return false;
       const first = host.split(":")[0] ?? "";
       if (/^f[cd]/.test(first)) return false;
@@ -4200,7 +4212,12 @@
     expectedTool: external_exports.string().min(1).optional(),
     forbiddenTools: external_exports.array(external_exports.string().min(1)).optional(),
     requiredArgs: external_exports.record(external_exports.unknown()).optional()
-  });
+  }).refine(
+    (e) => Boolean(e.expectedTool) || (e.forbiddenTools?.length ?? 0) > 0 || Object.keys(e.requiredArgs ?? {}).length > 0,
+    {
+      message: "a tool expectation must assert at least one of expectedTool, forbiddenTools, or requiredArgs \u2014 an empty expectation auto-passes 10/10"
+    }
+  );
   var GeneratedToolCaseSchema = external_exports.object({
     category: CaseCategorySchema,
     input: external_exports.string().min(1),
@@ -4263,7 +4280,11 @@
   }
   async function deleteAllKeys(area3) {
     const current = await loadSettings(area3);
-    const next = SettingsSchema.parse({ ...current, keys: {} });
+    const next = SettingsSchema.parse({
+      ...current,
+      keys: {},
+      mcpServers: current.mcpServers.map(({ authHeader: _authHeader, ...server }) => server)
+    });
     await saveSettings(area3, next);
     return next;
   }
@@ -4334,7 +4355,16 @@
     });
   }
 
+  // src/platform/store.ts
+  var QuotaExceededError = class extends Error {
+    constructor(message, options) {
+      super(message, options);
+      this.name = "QuotaExceededError";
+    }
+  };
+
   // src/platform/sessionTabStore.ts
+  var DEFAULT_MAX_RUNS = 50;
   var VERSION_KEY_PREFIX = "litmus:versions:";
   var DURABLE_VERSION_KEY = `${VERSION_KEY_PREFIX}default`;
   var SCHEMA_VERSION = 1;
@@ -4347,9 +4377,10 @@
     return { schemaVersion: SCHEMA_VERSION, versions, runs };
   }
   var SessionTabStore = class {
-    constructor(area3, resolveKey) {
+    constructor(area3, resolveKey, maxRuns = DEFAULT_MAX_RUNS) {
       this.area = area3;
       this.resolveKey = resolveKey;
+      this.maxRuns = maxRuns;
     }
     /** Memoized key so every op in a panel session targets the same tab namespace. */
     keyPromise = null;
@@ -4376,53 +4407,115 @@
       );
       return run;
     }
+    /**
+     * Read used INSIDE a write critical section. A missing key is a legitimately
+     * fresh namespace and returns EMPTY, but a storage failure MUST propagate: if
+     * we swallowed it and returned EMPTY here, the caller would write a blob
+     * derived from empty and wipe all durable history (the P0 read-swallow bug).
+     */
     async read() {
+      const k = await this.key();
+      const got = await this.area.get(k);
+      return asBlob(got[k]);
+    }
+    /**
+     * Read used for DISPLAY (getVersions/getRun). Here degrading to empty on a
+     * transient storage error is acceptable — it only affects what's shown, never
+     * what's persisted — so the panel renders instead of throwing.
+     */
+    async readSafe() {
       try {
-        const k = await this.key();
-        const got = await this.area.get(k);
-        return asBlob(got[k]);
+        return await this.read();
       } catch {
         return { ...EMPTY, versions: [], runs: {} };
       }
     }
-    async write(blob) {
+    /**
+     * Keep at most `maxRuns` RunRecord blobs, dropping the oldest by createdAt.
+     * Versions metadata is tiny so all versions are retained; a version whose run
+     * was pruned still shows in the timeline, just without run detail. Runs at the
+     * quota boundary tie-break stably (later object order wins). Called on the
+     * write path BEFORE area.set so we never grow the item unboundedly.
+     */
+    prune(runs) {
+      const entries = Object.entries(runs);
+      if (entries.length <= this.maxRuns) return runs;
+      const kept = entries.sort((a, b) => b[1].createdAt - a[1].createdAt).slice(0, this.maxRuns);
+      return Object.fromEntries(kept);
+    }
+    /**
+     * Persist a blob. If the backing store rejects `set` (chrome.storage.local
+     * byte quota is the common cause, even with unlimitedStorage during upgrade
+     * windows), surface a typed QuotaExceededError the UI can catch — rather than
+     * a bare throw that wedges the panel and loses a completed paid run.
+     */
+    async writeBlob(blob) {
       const k = await this.key();
-      await this.area.set({ [k]: { schemaVersion: SCHEMA_VERSION, ...blob } });
+      try {
+        await this.area.set({ [k]: { schemaVersion: SCHEMA_VERSION, ...blob } });
+      } catch (cause) {
+        throw new QuotaExceededError("litmus: could not persist version history (storage quota exceeded)", { cause });
+      }
+    }
+    /**
+     * Merge-on-write. Re-reads the CURRENT stored blob immediately before writing
+     * and applies `merge` ADDITIVELY, so a concurrent write from another side
+     * panel (side panels are per-window but share one durable key, and
+     * chrome.storage offers no transaction/CAS) is not clobbered by our stale
+     * start-of-op snapshot. HONEST CAVEAT: this is an additive merge, not a true
+     * DB transaction — a genuinely simultaneous byte-level get→set overlap can
+     * still race, but it no longer SILENTLY drops the other window's versions/runs.
+     */
+    async mergeWrite(merge) {
+      const current = await this.read();
+      const merged = merge(current);
+      await this.writeBlob({ versions: merged.versions, runs: this.prune(merged.runs) });
     }
     async getVersions() {
-      const { versions } = await this.read();
+      const { versions } = await this.readSafe();
       return [...versions].sort((a, b) => a.index - b.index);
     }
     async putVersion(version) {
-      await this.enqueue(async () => {
-        const blob = await this.read();
-        const versions = blob.versions.filter((v2) => v2.id !== version.id);
-        versions.push(version);
-        await this.write({ versions, runs: blob.runs });
-      });
+      await this.enqueue(
+        () => this.mergeWrite((current) => {
+          const versions = current.versions.filter((v2) => v2.id !== version.id);
+          versions.push(version);
+          return { versions, runs: current.runs };
+        })
+      );
     }
     async appendVersion(build) {
       return this.enqueue(async () => {
-        const blob = await this.read();
-        const sorted = [...blob.versions].sort((a, b) => a.index - b.index);
-        const index = sorted.length + 1;
+        const snapshot = await this.read();
+        const sorted = [...snapshot.versions].sort((a, b) => a.index - b.index);
         const prev = sorted[sorted.length - 1];
-        const version = build(index, prev);
-        const versions = blob.versions.filter((v2) => v2.id !== version.id);
-        versions.push(version);
-        await this.write({ versions, runs: blob.runs });
+        let version = build(sorted.length + 1, prev);
+        await this.mergeWrite((current) => {
+          const others = current.versions.filter((v2) => v2.id !== version.id);
+          if (others.some((v2) => v2.index === version.index)) {
+            const maxIndex = others.reduce((m, v2) => Math.max(m, v2.index), 0);
+            version = { ...version, index: maxIndex + 1 };
+          }
+          return { versions: [...others, version], runs: current.runs };
+        });
         return version;
       });
     }
     async getRun(versionId) {
-      const { runs } = await this.read();
+      const { runs } = await this.readSafe();
       return runs[versionId] ?? null;
     }
     async putRun(record) {
-      await this.enqueue(async () => {
-        const blob = await this.read();
-        await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
-      });
+      await this.enqueue(
+        () => this.mergeWrite((current) => ({
+          versions: current.versions,
+          // Additive merge of the runs map: keep every other window's runs.
+          runs: { ...current.runs, [record.versionId]: record }
+        }))
+      );
+    }
+    async clearHistory() {
+      await this.enqueue(() => this.writeBlob({ versions: [], runs: {} }));
     }
   };
 
@@ -4509,7 +4602,7 @@
     if (provider === "openai" && OPENAI_MAX_COMPLETION_TOKENS.test(model)) return "max_completion_tokens";
     return "max_tokens";
   }
-  var OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search|babbage|davinci)/i;
+  var OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|dall-?e|image|moderation|realtime|transcribe|search(?!-preview)|babbage|davinci)/i;
   function isChatModel(provider, model) {
     if (provider === "openai") return !OPENAI_NON_CHAT.test(model);
     return true;
@@ -4517,7 +4610,7 @@
   function supportsTools(provider, model) {
     if (provider === "openai") {
       if (!isChatModel("openai", model)) return false;
-      if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model);
+      if (/^gpt-3\.5/i.test(model)) return /^gpt-3\.5-turbo/i.test(model) && !/-instruct/i.test(model);
       return true;
     }
     if (provider === "anthropic") {
@@ -4914,7 +5007,10 @@
         if (!m.toolName) {
           throw new Error("google: tool result is missing toolName (required to match functionResponse by name)");
         }
-        contents.push({ role: "user", parts: [{ functionResponse: { name: m.toolName, response: toResponseObject(m.content) } }] });
+        const part = { functionResponse: { name: m.toolName, response: toResponseObject(m.content) } };
+        const prev = contents[contents.length - 1];
+        if (prev && prev.role === "user") prev.parts.push(part);
+        else contents.push({ role: "user", parts: [part] });
       } else if (m.role === "assistant" && m.toolCalls?.length) {
         const parts = m.content ? [{ text: m.content }] : [];
         for (const c of m.toolCalls) parts.push({ functionCall: { name: c.name, args: c.arguments ?? {} } });
@@ -5031,7 +5127,13 @@
       const detail = await res.text().catch(() => "");
       throw new ProviderError(provider, res.status, detail);
     }
-    const json = JSON.parse(await res.text());
+    const text = await res.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new ProviderError(provider, res.status, `expected a JSON model list but received a non-JSON body: ${text.slice(0, 120)}`);
+    }
     return parseFor(provider, json).filter((id) => isChatModel(provider, id)).sort((a, b) => a.localeCompare(b));
   }
 
@@ -5070,9 +5172,21 @@
   var NUDGE = "Your previous response could not be parsed. Reply with ONLY valid JSON matching the requested schema \u2014 no prose, no markdown fences.";
   async function callJson(provider, request, options, parse, retries = 1) {
     let lastError;
+    let lastText = "";
     for (let attempt = 0; attempt <= retries; attempt++) {
-      const req = attempt === 0 ? request : { ...request, messages: [...request.messages, { role: "user", content: NUDGE }] };
+      const req = attempt === 0 ? request : {
+        ...request,
+        // Include the failed assistant turn so the model can see what it
+        // produced, and so the corrective nudge doesn't create two
+        // consecutive user turns.
+        messages: [
+          ...request.messages,
+          { role: "assistant", content: lastText },
+          { role: "user", content: NUDGE }
+        ]
+      };
       const res = await provider.chat(req, options);
+      lastText = res.text;
       try {
         return parse(res.text);
       } catch (err) {
@@ -5234,10 +5348,13 @@ ${intentHint}` : "",
       { role: "user", content: systemPrompt }
     ];
   }
+  function hasAssertion(c) {
+    return Boolean(c.expectedTool) || (c.forbiddenTools?.length ?? 0) > 0 || Object.keys(c.requiredArgs ?? {}).length > 0;
+  }
   function parseToolCases(text, makeId = defaultMakeId2) {
     const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
     const json = JSON.parse(cleaned);
-    return GeneratedToolCasesSchema.parse(json).cases.map((c, i) => {
+    return GeneratedToolCasesSchema.parse(json).cases.filter(hasAssertion).map((c, i) => {
       const toolExpectations = {
         ...c.expectedTool ? { expectedTool: c.expectedTool } : {},
         ...c.forbiddenTools?.length ? { forbiddenTools: c.forbiddenTools } : {},
@@ -5428,7 +5545,15 @@ ${analysisHint2}` : "",
 
   // src/services/evalSuite.ts
   async function generateEvalSuite(systemPrompt, deps, analysisHint2, onProgress) {
-    const dimensions = await extractDimensions(systemPrompt, deps, analysisHint2);
+    const extracted = await extractDimensions(systemPrompt, deps, analysisHint2);
+    const seen = /* @__PURE__ */ new Set();
+    const dimensions = [];
+    for (const d of extracted) {
+      if (d && !seen.has(d.name)) {
+        seen.add(d.name);
+        dimensions.push(d);
+      }
+    }
     const rubrics = {};
     for (let i = 0; i < dimensions.length; i++) {
       const d = dimensions[i];
@@ -5506,11 +5631,20 @@ ${text}`).join("\n\n");
     const max = Math.max(...scores);
     const mean2 = scores.reduce((a, s2) => a + s2, 0) / scores.length;
     const spread = { count: scores.length, scores, min, max, stdev: stdev(scores, mean2) };
+    let nearest = 0;
+    let bestDelta = Math.abs(verdicts[0].score - score);
+    for (let i = 1; i < verdicts.length; i++) {
+      const delta = Math.abs(verdicts[i].score - score);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        nearest = i;
+      }
+    }
     const agreement = min === max ? `judges agreed at ${score}` : `${verdicts.length} judges: median ${score} (${min}\u2013${max}, \u03C3${spread.stdev})`;
     const dimensions = aggregateDimensions(verdicts);
     return {
       score,
-      rationale: `${first.rationale} \xB7 ${agreement}`,
+      rationale: `${verdicts[nearest].rationale} \xB7 ${agreement}`,
       ...dimensions ? { dimensions } : {},
       spread
     };
@@ -5729,6 +5863,17 @@ ${output}`
         if (def) reasons.push(...validateArgsSchema(target.arguments, def.parameters));
         if (expectation.requiredArgs) reasons.push(...checkRequiredArgs(target.arguments, expectation.requiredArgs));
       }
+    } else if (expectation.requiredArgs && !expectation.expectedTool) {
+      if (calls.length === 0) {
+        reasons.push("requiredArgs set but no tool was called");
+      } else {
+        const anyMatch = calls.some(
+          (c) => c.arguments !== void 0 && checkRequiredArgs(c.arguments, expectation.requiredArgs).length === 0
+        );
+        if (!anyMatch) {
+          reasons.push(`no tool call carried the required args ${JSON.stringify(expectation.requiredArgs)}`);
+        }
+      }
     }
     const passed = reasons.length === 0;
     return { passed, score: passed ? 10 : 0, reasons };
@@ -5930,6 +6075,27 @@ ${output}`
         const msg2 = ctype.includes("text/event-stream") ? await this.readFromStream(res, req.id, signal) : await this.readFromJson(res, req.id);
         if (!msg2) throw new McpTransportError(res.status, `no JSON-RPC response for id ${req.id}`);
         return msg2;
+      } finally {
+        done();
+      }
+    }
+    /**
+     * Terminate the MCP session (spec 2025-03-26+): DELETE the session endpoint with
+     * the `mcp-session-id` header. Best-effort — a server that never issued a session
+     * id, or one that rejects the DELETE, must not fail the caller's teardown.
+     */
+    async close() {
+      if (!this.sessionId) return;
+      const { signal, done } = this.deadline();
+      try {
+        const res = await this.fetchImpl(this.config.url, {
+          method: "DELETE",
+          headers: this.headers(),
+          redirect: "error",
+          signal
+        });
+        await res.text().catch(() => "");
+      } catch {
       } finally {
         done();
       }
@@ -6138,6 +6304,16 @@ ${output}`
     async callTool(name, args) {
       return toCallResult(await this.call("tools/call", { name, arguments: args ?? {} }));
     }
+    /**
+     * Terminate the server session and release transport resources. Idempotent and
+     * best-effort — callers issue this in a `finally` after a scenario/sample so a
+     * long run does not leak one live MCP session per case. Clears the cached
+     * handshake so a reused client re-handshakes on the next `connect()`.
+     */
+    async close() {
+      this.handshake = void 0;
+      if (this.transport.close) await this.transport.close();
+    }
     async call(method, params) {
       const res = await this.transport.request(makeRequest(this.nextId(), method, params));
       return unwrap(method, res);
@@ -6175,14 +6351,22 @@ ${output}`
   function scorePasses(score, threshold = DEFAULT_PASS_THRESHOLD) {
     return score >= threshold;
   }
-  function foldSamples(runs, threshold = DEFAULT_PASS_THRESHOLD) {
+  function foldDimensions(runs) {
+    const first = runs[0]?.dimensions;
+    if (!first) return void 0;
+    return first.map((d) => {
+      const scores = runs.map((r) => r.dimensions?.find((x) => x.dimension === d.dimension)?.score).filter((s2) => s2 !== void 0);
+      return { dimension: d.dimension, score: round1(scores.reduce((a, b) => a + b, 0) / scores.length) };
+    });
+  }
+  function foldSamples(runs, _threshold = DEFAULT_PASS_THRESHOLD) {
     const first = runs[0];
     if (!first) throw new Error("foldSamples: no runs");
     if (runs.length === 1) return first;
     const scores = runs.map((r) => r.score);
     const mean2 = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
     const variance = scores.reduce((a, s2) => a + (s2 - mean2) ** 2, 0) / scores.length;
-    const passRate = runs.filter((r) => scorePasses(r.score, threshold)).length / runs.length;
+    const passRate = runs.filter((r) => r.passed).length / runs.length;
     const stats = {
       count: runs.length,
       scores,
@@ -6193,12 +6377,14 @@ ${output}`
       passRate
     };
     const spread = stats.min === stats.max ? `stable at ${mean2}` : `${stats.min}\u2013${stats.max}, \u03C3${stats.stdev}`;
+    const dimensions = foldDimensions(runs);
     return {
       ...first,
       score: mean2,
       passed: passRate >= 0.5,
       rationale: `${first.rationale} \xB7 ${runs.length} runs (${spread})`,
-      samples: stats
+      samples: stats,
+      ...dimensions ? { dimensions } : {}
     };
   }
   function summarizeRun(results, _threshold = DEFAULT_PASS_THRESHOLD) {
@@ -6240,29 +6426,33 @@ ${output}`
   }
   async function scenarioCaseResult(systemPrompt, evalCase, deps) {
     const scenario = evalCase.scenario;
-    const wired = scenario.mcpServerId ? await wireMcp(scenario.mcpServerId, deps) : { tools: mockToolDefs(scenario), resolver: void 0 };
-    const step = providerStep({
-      provider: deps.targetProvider,
-      apiKey: deps.targetKey,
-      model: deps.target.model,
-      tools: wired.tools,
-      fetchImpl: deps.fetchImpl,
-      clock: deps.clock,
-      signal: deps.signal
-    });
-    const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal, wired.resolver);
-    const verdict = scoreScenario(trajectory, scenario);
-    const turnTimings = trajectory.steps.map((s2) => s2.timing).filter((t) => t !== void 0);
-    return {
-      caseId: evalCase.id,
-      output: JSON.stringify(trajectory),
-      score: verdict.score,
-      passed: verdict.passed,
-      rationale: verdict.rationale,
-      timing: aggregateTrajectoryTiming(turnTimings),
-      // summed across turns (ADR 0002)
-      dimensions: verdict.dimensions
-    };
+    const wired = scenario.mcpServerId ? await wireMcp(scenario.mcpServerId, deps) : { tools: mockToolDefs(scenario), resolver: void 0, client: void 0 };
+    try {
+      const step = providerStep({
+        provider: deps.targetProvider,
+        apiKey: deps.targetKey,
+        model: deps.target.model,
+        tools: wired.tools,
+        fetchImpl: deps.fetchImpl,
+        clock: deps.clock,
+        signal: deps.signal
+      });
+      const trajectory = await runAgent(systemPrompt, scenario, step, deps.signal, wired.resolver);
+      const verdict = scoreScenario(trajectory, scenario);
+      const turnTimings = trajectory.steps.map((s2) => s2.timing).filter((t) => t !== void 0);
+      return {
+        caseId: evalCase.id,
+        output: JSON.stringify(trajectory),
+        score: verdict.score,
+        passed: verdict.passed,
+        rationale: verdict.rationale,
+        timing: aggregateTrajectoryTiming(turnTimings),
+        // summed across turns (ADR 0002)
+        dimensions: verdict.dimensions
+      };
+    } finally {
+      await wired.client?.close();
+    }
   }
   function mockToolDefs(scenario) {
     return scenario.tools.map((t) => ({
@@ -6291,7 +6481,7 @@ ${output}`
       ...t.description ? { description: t.description } : {},
       parameters: t.inputSchema
     }));
-    return { tools, resolver: mcpResolver(client, discovered) };
+    return { tools, resolver: mcpResolver(client, discovered), client };
   }
   function throwIfAborted(signal) {
     if (signal?.aborted) throw new DOMException("Run aborted", "AbortError");
@@ -6903,18 +7093,23 @@ ${c?.input ?? ""}
     const base = baselineArgs(props);
     const probes = [];
     const notes = [];
-    probes.push({ kind: "empty-args", toolName: tool.name, args: {}, description: "no arguments supplied" });
+    if (required.length > 0) {
+      probes.push({ kind: "empty-args", toolName: tool.name, args: {}, description: "no arguments supplied" });
+    } else {
+      notes.push(`${tool.name}: empty-args probe skipped (no required parameters \u2014 {} is schema-valid)`);
+    }
     for (const key of required) {
       const args = { ...base };
       delete args[key];
       probes.push({ kind: "missing-required", toolName: tool.name, args, description: `omits required "${key}"` });
     }
     for (const [key, spec] of Object.entries(props)) {
+      if (spec.type === void 0) continue;
       probes.push({
         kind: "type-fuzz",
         toolName: tool.name,
         args: { ...base, [key]: wrongValue(spec.type) },
-        description: `wrong type for "${key}" (declared ${spec.type ?? "string"})`
+        description: `wrong type for "${key}" (declared ${spec.type})`
       });
     }
     const stringKeys = Object.entries(props).filter(([, s2]) => (s2.type ?? "string") === "string").map(([k]) => k);
@@ -7185,9 +7380,6 @@ what language is it written in?` : `{"city":"Paris"}
       setConn("error", "Host permission denied");
       return;
     }
-    const settings = await loadSettings(area);
-    await saveSettings(area, { ...settings, mcpServers: [config] });
-    s.serverId = config.id;
     setConn("connecting");
     try {
       const client = connectMcp(config);
@@ -7197,6 +7389,9 @@ what language is it written in?` : `{"city":"Paris"}
         setConn("error", fail?.detail ?? "handshake failed");
         return;
       }
+      const settings = await loadSettings(area);
+      await saveSettings(area, { ...settings, mcpServers: [config] });
+      s.serverId = config.id;
       const caps = report.handshake.capabilities;
       s.client = client;
       s.handshake = report.handshake;
@@ -7287,6 +7482,8 @@ what language is it written in?` : `{"city":"Paris"}
     setHtml("mcpBatchResult", batchResultsHtml(results));
     status(truncated ? `Ran ${lines.length} (capped at ${MAX_BATCH}).` : `Ran ${lines.length} call(s).`);
   }
+  var ArgError = class extends Error {
+  };
   function readArgs() {
     const raw = $("mcpRawBox");
     if (raw && !raw.classList.contains("hidden")) {
@@ -7304,8 +7501,11 @@ what language is it written in?` : `{"city":"Paris"}
       }
       const raw2 = f.value.trim();
       if (raw2 === "") continue;
-      if (type === "number") args[key] = Number(raw2);
-      else if (type === "json") args[key] = JSON.parse(raw2);
+      if (type === "number") {
+        const num = Number(raw2);
+        if (Number.isNaN(num)) throw new ArgError(`"${key}" must be a number (got "${raw2}").`);
+        args[key] = num;
+      } else if (type === "json") args[key] = JSON.parse(raw2);
       else args[key] = raw2;
     }
     return args;
@@ -7315,8 +7515,9 @@ what language is it written in?` : `{"city":"Paris"}
     let args;
     try {
       args = readArgs();
-    } catch {
-      setHtml("mcpToolResult", '<div class="mcp-err">Arguments are not valid JSON.</div>');
+    } catch (err) {
+      const msg2 = err instanceof ArgError ? err.message : "Arguments are not valid JSON.";
+      setHtml("mcpToolResult", `<div class="mcp-err">${escapePre(msg2)}</div>`);
       return;
     }
     setHtml("mcpToolResult", `Calling <code>${escapePre(name)}</code>\u2026`);
@@ -7441,7 +7642,72 @@ what language is it written in?` : `{"city":"Paris"}
   function sessionKey(ctx) {
     return [ctx.target.model, ctx.w.auxModel, state.prompt].join("\u241F");
   }
+  function toolsForMode(mode, tools) {
+    return mode === "tools" ? [...tools] : [];
+  }
+  function estimateRunCost(i) {
+    const samples = Math.max(1, i.samples);
+    const est = i.mode === "tools" ? estimateRun({
+      caseCount: i.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
+      targetModel: i.targetModel,
+      judgeModel: i.auxModel,
+      analyzerModel: i.auxModel,
+      includeAnalysis: false,
+      includeEvalGen: false,
+      includeJudge: false,
+      includeFixes: false,
+      avgInputTokens: 600,
+      avgOutputTokens: 400
+    }) : estimateRun({
+      caseCount: i.cases.length * samples,
+      targetModel: i.targetModel,
+      judgeModel: i.auxModel,
+      analyzerModel: i.auxModel,
+      includeAnalysis: false,
+      includeEvalGen: false,
+      includeFixes: true,
+      judgeSamples: i.judgeSamples,
+      avgInputTokens: 600,
+      avgOutputTokens: 400
+    });
+    return { est, over: exceedsCap(est, i.spendCapUsd) };
+  }
+  var settingsTail = Promise.resolve();
+  function enqueueSettings(op) {
+    const run = settingsTail.then(op, op);
+    settingsTail = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  var QUOTA_STATUS = "History storage is full \u2014 clear history to continue. Your results are shown but were not saved.";
+  async function persistRunTo(target, build, makeRun) {
+    let version = null;
+    try {
+      version = await target.appendVersion(build);
+      await target.putRun(makeRun(version));
+      return { version, quota: false };
+    } catch (err) {
+      if (err instanceof QuotaExceededError) return { version, quota: true };
+      throw err;
+    }
+  }
+  var _restoring = false;
+  function isRestoring() {
+    return _restoring;
+  }
+  function runRestore(mutate, persist) {
+    _restoring = true;
+    try {
+      mutate();
+    } finally {
+      _restoring = false;
+    }
+    persist();
+  }
   function persistSession() {
+    if (_restoring) return;
     void saveSnapshot(session, {
       prompt: state.prompt,
       targetValue: el("target").value,
@@ -7459,30 +7725,32 @@ what language is it written in?` : `{"city":"Paris"}
   async function restoreSession() {
     const snap = await loadSnapshot(session);
     if (!snap || !snap.prompt) return;
-    state.prompt = snap.prompt;
-    state.analysis = snap.analysis;
-    state.dimensions = snap.dimensions;
-    state.rubrics = snap.rubrics;
-    state.activeDimension = snap.activeDimension;
-    state.cases = snap.cases;
-    state.tools = snap.tools ?? [];
-    if (snap.mode) setMode(snap.mode);
-    applyOutputType();
-    suiteKey = snap.suiteKey;
-    casesKey = snap.casesKey;
-    el("prompt").value = snap.prompt;
-    const targetSel = el("target");
-    if (snap.targetValue) {
-      targetSel.value = snap.targetValue;
-      if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
-    }
-    if (state.tools.length) {
-      el("toolDefs").value = JSON.stringify(state.tools, null, 2);
-      const status2 = el("toolDefsStatus");
-      status2.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
-      status2.className = "toolstatus ok";
-    }
-    populateExpectedToolSelect();
+    runRestore(() => {
+      state.prompt = snap.prompt;
+      state.analysis = snap.analysis;
+      state.dimensions = snap.dimensions;
+      state.rubrics = snap.rubrics;
+      state.activeDimension = snap.activeDimension;
+      state.cases = snap.cases;
+      state.tools = snap.tools ?? [];
+      suiteKey = snap.suiteKey;
+      casesKey = snap.casesKey;
+      el("prompt").value = snap.prompt;
+      const targetSel = el("target");
+      if (snap.targetValue) {
+        targetSel.value = snap.targetValue;
+        if (targetSel.value === snap.targetValue) state.target = parseTarget(snap.targetValue);
+      }
+      if (snap.mode) setMode(snap.mode);
+      applyOutputType();
+      if (state.tools.length) {
+        el("toolDefs").value = JSON.stringify(state.tools, null, 2);
+        const status2 = el("toolDefsStatus");
+        status2.textContent = `\u2713 ${state.tools.length} tool${state.tools.length === 1 ? "" : "s"} defined`;
+        status2.className = "toolstatus ok";
+      }
+      populateExpectedToolSelect();
+    }, persistSession);
   }
   function appendCatalogGroups(sel, settings, bare) {
     for (const p of PROVIDER_ORDER) {
@@ -7585,7 +7853,7 @@ what language is it written in?` : `{"city":"Paris"}
     const value = el("apiKey").value.trim();
     if (!value) return setMessage("Enter a key first.", "error");
     try {
-      await setKey(area2, currentProvider(), value);
+      await enqueueSettings(() => setKey(area2, currentProvider(), value));
       el("apiKey").value = "";
       setMessage("");
       await refreshKeyState();
@@ -7731,12 +7999,13 @@ what language is it written in?` : `{"city":"Paris"}
     show("run");
     el("runStatus").textContent = "Auto-generating evaluation\u2026";
     el("runProgress").textContent = "";
+    const ac = beginRun();
     try {
       const key = sessionKey(ctx);
       if (suiteKey !== key || Object.keys(state.rubrics).length === 0) {
         const suite = await generateEvalSuite(
           state.prompt,
-          suiteDeps(ctx),
+          { ...suiteDeps(ctx), signal: ac.signal },
           void 0,
           (dim, i, t) => el("runStatus").textContent = `Writing rubric ${i}/${t}: ${dim}\u2026`
         );
@@ -7745,22 +8014,18 @@ what language is it written in?` : `{"city":"Paris"}
         suiteKey = key;
       }
       el("runStatus").textContent = "Generating test cases\u2026";
-      await ensureCases(false);
+      await ensureCases(false, ac.signal);
       persistSession();
-      const samples = Math.max(1, ctx.settings.samples);
-      const est = estimateRun({
-        caseCount: state.cases.length * samples,
-        targetModel: ctx.target.model,
-        judgeModel: ctx.w.auxModel,
-        analyzerModel: ctx.w.auxModel,
-        includeAnalysis: false,
-        includeEvalGen: false,
-        includeFixes: true,
+      const { est, over } = estimateRunCost({
+        mode: state.mode,
+        cases: state.cases,
+        samples: ctx.settings.samples,
         judgeSamples: ctx.settings.judgeSamples,
-        avgInputTokens: 600,
-        avgOutputTokens: 400
+        targetModel: ctx.target.model,
+        auxModel: ctx.w.auxModel,
+        spendCapUsd: ctx.settings.spendCapUsd
       });
-      if (exceedsCap(est, ctx.settings.spendCapUsd)) {
+      if (over) {
         await renderCasesView();
         return setMessage(
           `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(ctx.settings.spendCapUsd)} cap \u2014 trim cases or raise the cap in Settings, then Run.`,
@@ -7769,8 +8034,11 @@ what language is it written in?` : `{"city":"Paris"}
       }
       await onRun();
     } catch (err) {
-      setMessage(describeError(err), "error");
+      if (ac.signal.aborted) setMessage("Generation canceled \u2014 no run started.");
+      else setMessage(describeError(err), "error");
       show("capture");
+    } finally {
+      if (runAbort === ac) runAbort = null;
     }
   }
   async function onToToolTests() {
@@ -8056,7 +8324,7 @@ what language is it written in?` : `{"city":"Paris"}
       done();
     }
   }
-  async function ensureCases(force) {
+  async function ensureCases(force, signal) {
     const ctx = await wiring();
     const key = sessionKey(ctx);
     if (!force && casesKey === key && state.cases.length > 0) return;
@@ -8064,7 +8332,7 @@ what language is it written in?` : `{"city":"Paris"}
       state.prompt,
       ctx.target,
       DEFAULT_CASE_COUNT,
-      { provider: ctx.w.judgeProvider, apiKey: ctx.w.judgeKey, model: ctx.w.auxModel },
+      { provider: ctx.w.judgeProvider, apiKey: ctx.w.judgeKey, model: ctx.w.auxModel, ...signal ? { signal } : {} },
       analysisHint()
     );
     casesKey = key;
@@ -8074,31 +8342,15 @@ what language is it written in?` : `{"city":"Paris"}
     html("casesHost", casesListHtml(state.cases));
     const { settings, target, w } = await wiring();
     const toolsMode = state.mode === "tools";
-    const samples = Math.max(1, settings.samples);
-    const est = toolsMode ? estimateRun({
-      caseCount: state.cases.reduce((n, c) => n + (c.scenario ? c.scenario.maxSteps : 1), 0) * samples,
-      targetModel: target.model,
-      judgeModel: w.auxModel,
-      analyzerModel: w.auxModel,
-      includeAnalysis: false,
-      includeEvalGen: false,
-      includeJudge: false,
-      includeFixes: false,
-      avgInputTokens: 600,
-      avgOutputTokens: 400
-    }) : estimateRun({
-      caseCount: state.cases.length * samples,
-      targetModel: target.model,
-      judgeModel: w.auxModel,
-      analyzerModel: w.auxModel,
-      includeAnalysis: false,
-      includeEvalGen: false,
-      includeFixes: true,
+    const { est, over } = estimateRunCost({
+      mode: state.mode,
+      cases: state.cases,
+      samples: settings.samples,
       judgeSamples: settings.judgeSamples,
-      avgInputTokens: 600,
-      avgOutputTokens: 400
+      targetModel: target.model,
+      auxModel: w.auxModel,
+      spendCapUsd: settings.spendCapUsd
     });
-    const over = exceedsCap(est, settings.spendCapUsd);
     el("costLine").textContent = `${formatUsd(est.estUsd)} \xB7 ${est.totalCalls} calls \xB7 cap ${formatUsd(settings.spendCapUsd)}`;
     el("runBtn").disabled = over;
     el("regenBtn").classList.toggle("hidden", toolsMode);
@@ -8283,8 +8535,17 @@ ${existing}`
     setMessage(`Added agent scenario \u2014 ${state.cases.length} cases total.`);
   }
   var runAbort = null;
-  function onCancelRun() {
+  function beginRun() {
+    runAbort = new AbortController();
+    return runAbort;
+  }
+  function abortActiveRun() {
+    const active = runAbort !== null;
     runAbort?.abort();
+    return active;
+  }
+  function onCancelRun() {
+    abortActiveRun();
     el("runStatus").textContent = "Canceling\u2026";
   }
   async function onRun() {
@@ -8296,12 +8557,28 @@ ${existing}`
       );
     }
     show("run");
-    const ac = new AbortController();
-    runAbort = ac;
+    const ac = beginRun();
     const total = state.cases.length;
     el("runProgress").textContent = `0 / ${total} cases`;
     try {
       const { settings, target, w } = await wiring();
+      const { est, over } = estimateRunCost({
+        mode: state.mode,
+        cases: state.cases,
+        samples: settings.samples,
+        judgeSamples: settings.judgeSamples,
+        targetModel: target.model,
+        auxModel: w.auxModel,
+        spendCapUsd: settings.spendCapUsd
+      });
+      if (over) {
+        await renderCasesView();
+        setMessage(
+          `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(settings.spendCapUsd)} cap \u2014 trim cases or raise the cap in Settings.`,
+          "error"
+        );
+        return;
+      }
       el("runStatus").textContent = `Running ${total} cases on ${target.model}\u2026`;
       const outcome = await runEval(state.prompt, state.cases, {
         target,
@@ -8319,7 +8596,9 @@ ${existing}`
         onProgress: (done, t) => {
           el("runProgress").textContent = `${done} / ${t} cases`;
         },
-        ...state.tools.length ? { tools: state.tools } : {},
+        // Tools belong to tool/agent mode only — never leak a stale catalog into a
+        // quality-mode run (bug 3).
+        ...toolsForMode(state.mode, state.tools).length ? { tools: toolsForMode(state.mode, state.tools) } : {},
         ...settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}
       });
       state.outcome = outcome;
@@ -8334,7 +8613,7 @@ ${existing}`
           rubric: combined
         }).catch(() => null);
       }
-      const version = await store.appendVersion((index, prev) => {
+      const build = (index, prev) => {
         const samePrompt = Boolean(prev && prev.text === state.prompt);
         const modelChanged = Boolean(prev?.target && prev.target.model !== target.model);
         const note = index === 1 ? "baseline" : samePrompt ? modelChanged ? `same prompt \xB7 ${target.model}` : "re-run (no change)" : "edited prompt";
@@ -8347,18 +8626,21 @@ ${existing}`
           createdAt: Date.now(),
           target: { provider: target.provider, model: target.model }
         };
-      });
-      await store.putRun({
-        versionId: version.id,
+      };
+      const makeRun = (version2) => ({
+        versionId: version2.id,
         summary: outcome.summary,
         results: outcome.results,
         dimensions: aggregateDimensions2(outcome.results),
         ...state.rubricHealth ? { rubricHealth: state.rubricHealth } : {},
-        createdAt: version.createdAt
+        createdAt: version2.createdAt
       });
-      state.lastVersionId = version.id;
-      renderResults(version.index);
+      const { version, quota } = await persistRunTo(store, build, makeRun);
+      if (version) state.lastVersionId = version.id;
+      const shownIndex = version?.index ?? (await store.getVersions()).length + 1;
+      renderResults(shownIndex);
       show("results");
+      if (quota) setMessage(QUOTA_STATUS, "error");
     } catch (err) {
       if (ac.signal.aborted) {
         setMessage("Run canceled \u2014 no version saved.");
@@ -8440,16 +8722,11 @@ ${existing}`
   var axisVersions = [];
   var axisRuns = /* @__PURE__ */ new Map();
   var versionsReturnTo = "results";
-  async function showVersions(from = "results") {
-    versionsReturnTo = from;
-    const versions = await store.getVersions();
-    axisVersions = versions;
-    axisRuns.clear();
+  function buildVersionVMs(versions, runOf, currentId) {
     const vms = [];
     let prev = null;
     for (const v2 of versions) {
-      const run = await store.getRun(v2.id);
-      axisRuns.set(v2.id, run);
+      const run = runOf(v2.id);
       const overall = run?.summary.overall ?? 0;
       vms.push({
         label: `v${v2.index}`,
@@ -8457,17 +8734,34 @@ ${existing}`
         overall,
         passLabel: run ? `${run.summary.passCount}/${run.summary.total}` : "\u2014",
         avgSeconds: run ? round1(run.summary.speed.avgResponseMs / 1e3) : 0,
-        delta: prev === null ? null : round1(overall - prev),
-        current: v2.id === state.lastVersionId,
+        // Only compare when both this version and the previous one have a real score.
+        delta: prev === null || !run ? null : round1(overall - prev),
+        current: v2.id === currentId,
         ...v2.target ? { model: v2.target.model } : {}
       });
-      prev = overall;
+      prev = run ? overall : null;
     }
+    return vms;
+  }
+  async function showVersions(from = "results") {
+    versionsReturnTo = from;
+    const versions = await store.getVersions();
+    axisVersions = versions;
+    axisRuns.clear();
+    for (const v2 of versions) axisRuns.set(v2.id, await store.getRun(v2.id));
+    const vms = buildVersionVMs(versions, (id) => axisRuns.get(id) ?? null, state.lastVersionId);
     html("versionsHost", versionsTimelineHtml(vms));
     fillCompareSelect(el("compareA"), versions[0]?.id ?? "");
     fillCompareSelect(el("compareB"), versions[versions.length - 1]?.id ?? "");
     renderAxisPair();
     show("versions");
+  }
+  async function onClearHistory() {
+    await store.clearHistory();
+    state.lastVersionId = null;
+    await showVersions(versionsReturnTo);
+    await refreshVersionPicker();
+    setMessage("History cleared \u2014 all versions and runs removed.");
   }
   function fillCompareSelect(sel, selectedId) {
     sel.replaceChildren();
@@ -8665,7 +8959,6 @@ ${existing}`
   }
   async function onSaveSettings() {
     try {
-      const current = await loadSettings(area2);
       const customRaw = el("customModel").value.trim();
       if (customRaw) {
         try {
@@ -8674,7 +8967,7 @@ ${existing}`
           return setSettingsMsg('Custom model must be "provider/model", e.g. openai/gpt-5.4.', "error");
         }
       }
-      const next = mergeSettings(current, {
+      const patch = {
         keys: {
           openai: el("keyOpenai").value,
           anthropic: el("keyAnthropic").value,
@@ -8688,8 +8981,13 @@ ${existing}`
         samples: Number(el("samples").value),
         judgeSamples: Number(el("judgeSamples").value),
         concurrency: Number(el("concurrency").value)
+      };
+      const next = await enqueueSettings(async () => {
+        const current = await loadSettings(area2);
+        const merged = mergeSettings(current, patch);
+        await saveSettings(area2, merged);
+        return merged;
       });
-      await saveSettings(area2, next);
       const targetSel = el("target");
       fillTargetSelect(targetSel, next);
       targetSel.value = defaultValue(next);
@@ -8702,18 +9000,22 @@ ${existing}`
     }
   }
   async function onLoadModels() {
-    const s2 = await loadSettings(area2);
-    const providers = ["openai", "anthropic", "google"].filter((p) => s2.keys[p]);
+    const s0 = await loadSettings(area2);
+    const providers = ["openai", "anthropic", "google"].filter((p) => s0.keys[p]);
     if (providers.length === 0) return setSettingsMsg("Save at least one API key first.", "error");
     setSettingsMsg("Loading models from your key(s)\u2026");
-    const available = { ...s2.availableModels };
     try {
-      for (const p of providers) {
-        const key = s2.keys[p];
-        if (key) available[p] = await fetchModels(p, key);
-      }
-      const next = { ...s2, availableModels: available };
-      await saveSettings(area2, next);
+      const next = await enqueueSettings(async () => {
+        const s2 = await loadSettings(area2);
+        const available = { ...s2.availableModels };
+        for (const p of providers) {
+          const key = s2.keys[p];
+          if (key) available[p] = await fetchModels(p, key);
+        }
+        const merged = { ...s2, availableModels: available };
+        await saveSettings(area2, merged);
+        return merged;
+      });
       fillTargetSelect(el("defaultModel"), next);
       el("defaultModel").value = defaultValue(next);
       const jm = el("judgeModel");
@@ -8838,6 +9140,12 @@ ${existing}`
     el("compareB").addEventListener("change", () => renderAxisPair());
     el("versionsBackBtn").addEventListener("click", () => show(versionsReturnTo));
     el("versionsEditBtn").addEventListener("click", () => goCapture());
+    const clearHistoryBtn = document.createElement("button");
+    clearHistoryBtn.className = "btn ghost";
+    clearHistoryBtn.type = "button";
+    clearHistoryBtn.textContent = "Clear history";
+    clearHistoryBtn.addEventListener("click", () => void onClearHistory());
+    el("versionsBackBtn").parentElement?.insertBefore(clearHistoryBtn, el("versionsEditBtn"));
     el("exportMd").addEventListener("click", () => void exportReport("md"));
     el("exportJson").addEventListener("click", () => void exportReport("json"));
     el("casesHost").addEventListener("click", (e) => {
@@ -8864,5 +9172,5 @@ ${existing}`
       await refreshVersionPicker();
     })();
   }
-  init();
+  if (typeof document !== "undefined") init();
 })();

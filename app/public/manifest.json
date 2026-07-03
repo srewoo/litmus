@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "litmus — System Prompt Tester",
-  "version": "1.2",
+  "version": "1.3",
   "description": "Test, analyze, and version system prompts against the LLM you ship on. BYOK, local-first, no backend.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -26,6 +26,7 @@
   "permissions": [
     "sidePanel",
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "scripting"
   ],

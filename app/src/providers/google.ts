@@ -73,7 +73,7 @@ function toResponseObject(content: string): Record<string, unknown> {
  */
 export function toContents(messages: readonly ChatMessage[]): { system: string; contents: unknown[] } {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
-  const contents: unknown[] = [];
+  const contents: Array<{ role: string; parts: unknown[] }> = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
     if (m.role === 'tool') {
@@ -82,7 +82,14 @@ export function toContents(messages: readonly ChatMessage[]): { system: string; 
       if (!m.toolName) {
         throw new Error('google: tool result is missing toolName (required to match functionResponse by name)');
       }
-      contents.push({ role: 'user', parts: [{ functionResponse: { name: m.toolName, response: toResponseObject(m.content) } }] });
+      // Parallel tool calls in one assistant turn produce consecutive `tool`
+      // results. Gemini expects ALL their functionResponse parts grouped in the
+      // single following user turn — consecutive user entries can be rejected — so
+      // append onto the current user turn instead of opening a new one each time.
+      const part = { functionResponse: { name: m.toolName, response: toResponseObject(m.content) } };
+      const prev = contents[contents.length - 1];
+      if (prev && prev.role === 'user') prev.parts.push(part);
+      else contents.push({ role: 'user', parts: [part] });
     } else if (m.role === 'assistant' && m.toolCalls?.length) {
       const parts: unknown[] = m.content ? [{ text: m.content }] : [];
       for (const c of m.toolCalls) parts.push({ functionCall: { name: c.name, args: c.arguments ?? {} } });

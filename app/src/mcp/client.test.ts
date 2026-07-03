@@ -8,6 +8,7 @@ class FakeTransport implements McpTransport {
   sessionId: string | undefined;
   readonly requests: JsonRpcRequest[] = [];
   readonly notifications: JsonRpcNotification[] = [];
+  closeCalls = 0;
   constructor(
     private readonly results: Record<string, unknown>,
     sessionId?: string,
@@ -23,6 +24,10 @@ class FakeTransport implements McpTransport {
   }
   notify(n: JsonRpcNotification): Promise<void> {
     this.notifications.push(n);
+    return Promise.resolve();
+  }
+  close(): Promise<void> {
+    this.closeCalls += 1;
     return Promise.resolve();
   }
 }
@@ -109,5 +114,16 @@ describe('McpClient list/call methods', () => {
     const client = new McpClient(t);
     await client.connect();
     await expect(client.listPrompts()).rejects.toThrow(/no method/);
+  });
+});
+
+describe('McpClient.close', () => {
+  it('tears down the transport session and clears the cached handshake', async () => {
+    const t = new FakeTransport({ initialize: HANDSHAKE }, 'sess-9');
+    const client = new McpClient(t);
+    await client.connect();
+    await client.close();
+    expect(t.closeCalls).toBe(1); // transport teardown issued
+    expect(() => client.capabilities).toThrow(); // handshake cleared → re-handshake required
   });
 });

@@ -95,6 +95,31 @@ describe('assertToolCalls', () => {
     expect(r.reasons[0]).toMatch(/forbidden tool "delete_account"/);
   });
 
+  it('fails a requiredArgs-only expectation when no call satisfies the required args', () => {
+    // Without expectedTool the assertion is "SOME call carried these args"; it
+    // fails only when no call matches (not vacuously true).
+    const r = assertToolCalls([call('get_weather', { city: 'London' })], { requiredArgs: { city: 'Paris' } });
+    expect(r.passed).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/no tool call carried the required args/);
+  });
+
+  it('passes a requiredArgs-only expectation when at least one call satisfies the args', () => {
+    // A matching call alongside an unrelated one (e.g. a logging call) must still
+    // pass — requiring EVERY call to match would false-fail a valid trajectory.
+    const r = assertToolCalls(
+      [call('log_event', { name: 'search' }), call('get_weather', { city: 'Paris' })],
+      { requiredArgs: { city: 'Paris' } },
+    );
+    expect(r.passed).toBe(true);
+    expect(r.score).toBe(10);
+  });
+
+  it('fails a requiredArgs-only expectation when no tool was called at all', () => {
+    const r = assertToolCalls([], { requiredArgs: { city: 'Paris' } });
+    expect(r.passed).toBe(false);
+    expect(r.reasons[0]).toMatch(/no tool was called/);
+  });
+
   it('does not validate an arbitrary first call when there is no expectedTool', () => {
     // First call has unparseable args; without expectedTool it is not validated.
     const r = assertToolCalls([call('search', undefined, '{bad:'), call('get_weather', { city: 'Paris' })], {});

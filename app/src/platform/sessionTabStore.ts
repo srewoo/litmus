@@ -14,7 +14,11 @@
  */
 import type { PromptVersion } from '../shared/types';
 import type { PersistentStore, RunRecord } from './store';
+import { QuotaExceededError } from './store';
 import type { StorageArea } from './storage';
+
+/** Default cap on retained RunRecord blobs (versions metadata is small; kept in full). */
+export const DEFAULT_MAX_RUNS = 50;
 
 /** chrome.storage key prefix for version history. Kept in sync with background.js. */
 export const VERSION_KEY_PREFIX = 'litmus:versions:';
@@ -77,6 +81,8 @@ export class SessionTabStore implements PersistentStore {
   constructor(
     private readonly area: StorageArea,
     private readonly resolveKey: () => Promise<string>,
+    /** Retain at most this many RunRecord blobs; oldest are pruned before write. */
+    private readonly maxRuns: number = DEFAULT_MAX_RUNS,
   ) {}
 
   private key(): Promise<string> {
@@ -97,61 +103,135 @@ export class SessionTabStore implements PersistentStore {
     return run;
   }
 
+  /**
+   * Read used INSIDE a write critical section. A missing key is a legitimately
+   * fresh namespace and returns EMPTY, but a storage failure MUST propagate: if
+   * we swallowed it and returned EMPTY here, the caller would write a blob
+   * derived from empty and wipe all durable history (the P0 read-swallow bug).
+   */
   private async read(): Promise<VersionBlob> {
+    const k = await this.key();
+    const got = await this.area.get(k);
+    return asBlob(got[k]);
+  }
+
+  /**
+   * Read used for DISPLAY (getVersions/getRun). Here degrading to empty on a
+   * transient storage error is acceptable — it only affects what's shown, never
+   * what's persisted — so the panel renders instead of throwing.
+   */
+  private async readSafe(): Promise<VersionBlob> {
     try {
-      const k = await this.key();
-      const got = await this.area.get(k);
-      return asBlob(got[k]);
+      return await this.read();
     } catch {
       return { ...EMPTY, versions: [], runs: {} };
     }
   }
 
-  private async write(blob: { versions: PromptVersion[]; runs: Record<string, RunRecord> }): Promise<void> {
+  /**
+   * Keep at most `maxRuns` RunRecord blobs, dropping the oldest by createdAt.
+   * Versions metadata is tiny so all versions are retained; a version whose run
+   * was pruned still shows in the timeline, just without run detail. Runs at the
+   * quota boundary tie-break stably (later object order wins). Called on the
+   * write path BEFORE area.set so we never grow the item unboundedly.
+   */
+  private prune(runs: Record<string, RunRecord>): Record<string, RunRecord> {
+    const entries = Object.entries(runs);
+    if (entries.length <= this.maxRuns) return runs;
+    const kept = entries.sort((a, b) => b[1].createdAt - a[1].createdAt).slice(0, this.maxRuns);
+    return Object.fromEntries(kept);
+  }
+
+  /**
+   * Persist a blob. If the backing store rejects `set` (chrome.storage.local
+   * byte quota is the common cause, even with unlimitedStorage during upgrade
+   * windows), surface a typed QuotaExceededError the UI can catch — rather than
+   * a bare throw that wedges the panel and loses a completed paid run.
+   */
+  private async writeBlob(blob: { versions: PromptVersion[]; runs: Record<string, RunRecord> }): Promise<void> {
     const k = await this.key();
-    await this.area.set({ [k]: { schemaVersion: SCHEMA_VERSION, ...blob } });
+    try {
+      await this.area.set({ [k]: { schemaVersion: SCHEMA_VERSION, ...blob } });
+    } catch (cause) {
+      throw new QuotaExceededError('litmus: could not persist version history (storage quota exceeded)', { cause });
+    }
+  }
+
+  /**
+   * Merge-on-write. Re-reads the CURRENT stored blob immediately before writing
+   * and applies `merge` ADDITIVELY, so a concurrent write from another side
+   * panel (side panels are per-window but share one durable key, and
+   * chrome.storage offers no transaction/CAS) is not clobbered by our stale
+   * start-of-op snapshot. HONEST CAVEAT: this is an additive merge, not a true
+   * DB transaction — a genuinely simultaneous byte-level get→set overlap can
+   * still race, but it no longer SILENTLY drops the other window's versions/runs.
+   */
+  private async mergeWrite(
+    merge: (current: VersionBlob) => { versions: PromptVersion[]; runs: Record<string, RunRecord> },
+  ): Promise<void> {
+    const current = await this.read();
+    const merged = merge(current);
+    await this.writeBlob({ versions: merged.versions, runs: this.prune(merged.runs) });
   }
 
   async getVersions(): Promise<PromptVersion[]> {
-    const { versions } = await this.read();
+    const { versions } = await this.readSafe();
     return [...versions].sort((a, b) => a.index - b.index);
   }
 
   async putVersion(version: PromptVersion): Promise<void> {
-    await this.enqueue(async () => {
-      const blob = await this.read();
-      const versions = blob.versions.filter((v) => v.id !== version.id);
-      versions.push(version);
-      await this.write({ versions, runs: blob.runs });
-    });
+    await this.enqueue(() =>
+      this.mergeWrite((current) => {
+        // Union by id: replace our own version, preserve every other window's.
+        const versions = current.versions.filter((v) => v.id !== version.id);
+        versions.push(version);
+        return { versions, runs: current.runs };
+      }),
+    );
   }
 
   async appendVersion(build: (index: number, prev: PromptVersion | undefined) => PromptVersion): Promise<PromptVersion> {
-    // Runs through the SAME mutation queue as putVersion/putRun, so the
-    // read → allocate-index → write is atomic w.r.t. every other mutation: two
-    // concurrent appends can't both read N and write index N+1.
+    // Runs through the SAME intra-panel mutation queue as putVersion/putRun so
+    // two appends WITHIN this panel can't both read N and write index N+1. The
+    // merge-on-write below additionally protects against a cross-window append.
     return this.enqueue(async () => {
-      const blob = await this.read();
-      const sorted = [...blob.versions].sort((a, b) => a.index - b.index);
-      const index = sorted.length + 1;
+      const snapshot = await this.read();
+      const sorted = [...snapshot.versions].sort((a, b) => a.index - b.index);
       const prev = sorted[sorted.length - 1];
-      const version = build(index, prev);
-      const versions = blob.versions.filter((v) => v.id !== version.id);
-      versions.push(version);
-      await this.write({ versions, runs: blob.runs });
+      let version = build(sorted.length + 1, prev);
+      await this.mergeWrite((current) => {
+        const others = current.versions.filter((v) => v.id !== version.id);
+        // Collision: another window already stored a version at our computed
+        // index. Bump ours to max(existing)+1 so BOTH survive with distinct
+        // indices instead of overwriting the timeline.
+        if (others.some((v) => v.index === version.index)) {
+          const maxIndex = others.reduce((m, v) => Math.max(m, v.index), 0);
+          version = { ...version, index: maxIndex + 1 };
+        }
+        return { versions: [...others, version], runs: current.runs };
+      });
       return version;
     });
   }
 
   async getRun(versionId: string): Promise<RunRecord | null> {
-    const { runs } = await this.read();
+    const { runs } = await this.readSafe();
     return runs[versionId] ?? null;
   }
 
   async putRun(record: RunRecord): Promise<void> {
-    await this.enqueue(async () => {
-      const blob = await this.read();
-      await this.write({ versions: blob.versions, runs: { ...blob.runs, [record.versionId]: record } });
-    });
+    await this.enqueue(() =>
+      this.mergeWrite((current) => ({
+        versions: current.versions,
+        // Additive merge of the runs map: keep every other window's runs.
+        runs: { ...current.runs, [record.versionId]: record },
+      })),
+    );
+  }
+
+  async clearHistory(): Promise<void> {
+    // Deliberate wipe — goes through the queue but does NOT merge (that would
+    // resurrect what we're clearing). Writes EMPTY directly.
+    await this.enqueue(() => this.writeBlob({ versions: [], runs: {} }));
   }
 }

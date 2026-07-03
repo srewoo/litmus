@@ -15,6 +15,19 @@ export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'google']);
  * best-effort string-level check (literal IPs and well-known names); DNS
  * rebinding is out of scope for a client-side validator.
  */
+/** Apply the IPv4 SSRF rules to four octets (shared by literal and IPv6-mapped hosts). */
+function isSafeIpv4Octets(octets: readonly number[]): boolean {
+  if (octets.some((o) => o > 255)) return false;
+  const [a, b] = octets as [number, number, number, number];
+  if (a === 0) return false; // 0.0.0.0/8 incl. 0.0.0.0
+  if (a === 10) return false; // 10.0.0.0/8
+  if (a === 127) return false; // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return false; // 169.254.0.0/16 link-local + metadata
+  if (a === 172 && b >= 16 && b <= 31) return false; // 172.16.0.0/12
+  if (a === 192 && b === 168) return false; // 192.168.0.0/16
+  return true;
+}
+
 export function isSafeHttpUrl(url: string): boolean {
   let parsed: URL;
   try {
@@ -32,21 +45,25 @@ export function isSafeHttpUrl(url: string): boolean {
 
   // IPv4 literal (e.g. 169.254.169.254, 10.x, 127.x, 192.168.x, 172.16-31.x).
   const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const octets = ipv4.slice(1).map((o) => Number(o));
-    if (octets.some((o) => o > 255)) return false;
-    const [a, b] = octets as [number, number, number, number];
-    if (a === 0) return false; // 0.0.0.0/8 incl. 0.0.0.0
-    if (a === 10) return false; // 10.0.0.0/8
-    if (a === 127) return false; // 127.0.0.0/8 loopback
-    if (a === 169 && b === 254) return false; // 169.254.0.0/16 link-local + metadata
-    if (a === 172 && b >= 16 && b <= 31) return false; // 172.16.0.0/12
-    if (a === 192 && b === 168) return false; // 192.168.0.0/16
-    return true;
-  }
+  if (ipv4) return isSafeIpv4Octets(ipv4.slice(1).map((o) => Number(o)));
 
   // IPv6 literal: loopback (::1), unspecified (::), ULA fc00::/7, link-local fe80::/10.
   if (host.includes(':')) {
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d or ::ffff:hhhh:hhhh) — the embedded IPv4
+    // address is what actually gets dialed, so it must pass the IPv4 rules.
+    const mapped = host.match(/^::ffff:(.+)$/);
+    if (mapped) {
+      const tail = mapped[1] ?? '';
+      const dotted = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (dotted) return isSafeIpv4Octets(dotted.slice(1).map((o) => Number(o)));
+      const hexPair = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+      if (hexPair) {
+        const hi = parseInt(hexPair[1] ?? '0', 16);
+        const lo = parseInt(hexPair[2] ?? '0', 16);
+        return isSafeIpv4Octets([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
+      }
+      // Not a well-formed mapped tail — fall through to the generic IPv6 checks.
+    }
     if (host === '::1' || host === '::') return false;
     const first = host.split(':')[0] ?? '';
     if (/^f[cd]/.test(first)) return false; // fc00::/7 (fc, fd)
@@ -225,11 +242,22 @@ export const ToolCallSchema = z.object({
   rawArguments: z.string().optional(),
 });
 
-export const ToolExpectationSchema = z.object({
-  expectedTool: z.string().min(1).optional(),
-  forbiddenTools: z.array(z.string().min(1)).optional(),
-  requiredArgs: z.record(z.unknown()).optional(),
-});
+export const ToolExpectationSchema = z
+  .object({
+    expectedTool: z.string().min(1).optional(),
+    forbiddenTools: z.array(z.string().min(1)).optional(),
+    requiredArgs: z.record(z.unknown()).optional(),
+  })
+  .refine(
+    (e) =>
+      Boolean(e.expectedTool) ||
+      (e.forbiddenTools?.length ?? 0) > 0 ||
+      Object.keys(e.requiredArgs ?? {}).length > 0,
+    {
+      message:
+        'a tool expectation must assert at least one of expectedTool, forbiddenTools, or requiredArgs — an empty expectation auto-passes 10/10',
+    },
+  );
 
 /** Model output when auto-generating tool-test cases from a catalog (ADR 0001). */
 export const GeneratedToolCaseSchema = z.object({

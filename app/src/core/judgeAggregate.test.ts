@@ -56,6 +56,27 @@ describe('aggregateVerdicts', () => {
     expect(out.spread?.stdev).toBe(2);
   });
 
+  it('keeps the rationale of the sample nearest the median, not an outlier', () => {
+    // median([9,9,2]) = 9. first.rationale ('outlier') belongs to score 2 and
+    // would contradict the reported 9 — the nearest-median sample must win.
+    const out = aggregateVerdicts([
+      { score: 2, rationale: 'outlier' },
+      { score: 9, rationale: 'on the money' },
+      { score: 9, rationale: 'also good' },
+    ]);
+    expect(out.score).toBe(9);
+    expect(out.rationale).toMatch(/^on the money · /);
+  });
+
+  it('breaks a nearest-median tie by lowest index', () => {
+    // median([4,8]) = 6; both are distance 2 from the median → lowest index wins.
+    const out = aggregateVerdicts([
+      { score: 4, rationale: 'weak' },
+      { score: 8, rationale: 'strong' },
+    ]);
+    expect(out.rationale).toMatch(/^weak · /);
+  });
+
   it('notes agreement when judges concur', () => {
     const out = aggregateVerdicts([
       { score: 9, rationale: 'a' },

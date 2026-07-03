@@ -1,5 +1,5 @@
 /** Pure result aggregation: turn per-case results into a run summary (quality + speed). */
-import type { CaseResult, RunSummary, SampleStats } from '../shared/types';
+import type { CaseResult, DimensionScore, RunSummary, SampleStats } from '../shared/types';
 import { round1 } from '../shared/num';
 import { aggregateSpeed } from './timing';
 
@@ -11,18 +11,39 @@ export function scorePasses(score: number, threshold: number = DEFAULT_PASS_THRE
 }
 
 /**
+ * Average each dimension's score across the sampled runs. Dimension names come
+ * from the first run; runs missing a dimension (or all dimensions) simply don't
+ * contribute to its mean. Returns undefined when the first run has none.
+ */
+function foldDimensions(runs: readonly CaseResult[]): readonly DimensionScore[] | undefined {
+  const first = runs[0]?.dimensions;
+  if (!first) return undefined;
+  return first.map((d) => {
+    const scores = runs
+      .map((r) => r.dimensions?.find((x) => x.dimension === d.dimension)?.score)
+      .filter((s): s is number => s !== undefined);
+    return { dimension: d.dimension, score: round1(scores.reduce((a, b) => a + b, 0) / scores.length) };
+  });
+}
+
+/**
  * Fold N repeated runs of the same case into one CaseResult, capturing run-to-run
  * spread. Aggregated score is the mean; the case passes if the MAJORITY of samples
  * passed. With a single run, returns it unchanged (no samples block).
+ *
+ * Pass rate honours each run's `passed` flag (the single source of truth — a run
+ * can fail deterministically despite a high score, e.g. an invalid-arg tool call),
+ * never re-thresholds the score. The `threshold` parameter is retained for
+ * backward compatibility but no longer affects the fold.
  */
-export function foldSamples(runs: readonly CaseResult[], threshold: number = DEFAULT_PASS_THRESHOLD): CaseResult {
+export function foldSamples(runs: readonly CaseResult[], _threshold: number = DEFAULT_PASS_THRESHOLD): CaseResult {
   const first = runs[0];
   if (!first) throw new Error('foldSamples: no runs');
   if (runs.length === 1) return first;
   const scores = runs.map((r) => r.score);
   const mean = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
   const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
-  const passRate = runs.filter((r) => scorePasses(r.score, threshold)).length / runs.length;
+  const passRate = runs.filter((r) => r.passed).length / runs.length;
   const stats: SampleStats = {
     count: runs.length,
     scores,
@@ -33,12 +54,14 @@ export function foldSamples(runs: readonly CaseResult[], threshold: number = DEF
     passRate,
   };
   const spread = stats.min === stats.max ? `stable at ${mean}` : `${stats.min}–${stats.max}, σ${stats.stdev}`;
+  const dimensions = foldDimensions(runs);
   return {
     ...first,
     score: mean,
     passed: passRate >= 0.5,
     rationale: `${first.rationale} · ${runs.length} runs (${spread})`,
     samples: stats,
+    ...(dimensions ? { dimensions } : {}),
   };
 }
 

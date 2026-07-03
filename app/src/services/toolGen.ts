@@ -62,10 +62,20 @@ export function buildToolCaseMessages(
   ];
 }
 
+/**
+ * A generated case with no assertion at all (no expectedTool, no forbiddenTools,
+ * no requiredArgs) would map to `toolExpectations: {}` and auto-pass 10/10 in
+ * assertToolCalls — a vacuous test. Such cases are dropped, not failed, so one
+ * bad case doesn't discard the whole batch.
+ */
+function hasAssertion(c: { expectedTool?: string; forbiddenTools?: string[]; requiredArgs?: Record<string, unknown> }): boolean {
+  return Boolean(c.expectedTool) || (c.forbiddenTools?.length ?? 0) > 0 || Object.keys(c.requiredArgs ?? {}).length > 0;
+}
+
 export function parseToolCases(text: string, makeId: (index: number) => string = defaultMakeId): EvalCase[] {
   const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
   const json: unknown = JSON.parse(cleaned);
-  return GeneratedToolCasesSchema.parse(json).cases.map((c, i) => {
+  return GeneratedToolCasesSchema.parse(json).cases.filter(hasAssertion).map((c, i) => {
     const toolExpectations = {
       ...(c.expectedTool ? { expectedTool: c.expectedTool } : {}),
       ...(c.forbiddenTools?.length ? { forbiddenTools: c.forbiddenTools } : {}),

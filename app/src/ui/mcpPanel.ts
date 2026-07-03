@@ -103,9 +103,6 @@ async function onConnect(): Promise<void> {
     setConn('error', 'Host permission denied');
     return;
   }
-  const settings = await loadSettings(area);
-  await saveSettings(area, { ...settings, mcpServers: [config] });
-  s.serverId = config.id;
   setConn('connecting');
   try {
     const client = connectMcp(config);
@@ -117,6 +114,12 @@ async function onConnect(): Promise<void> {
       setConn('error', fail?.detail ?? 'handshake failed');
       return;
     }
+    // Persist only AFTER the handshake is confirmed, so a bad/unreachable server
+    // or a mistyped auth token is never written to storage. The form inputs stay
+    // untouched, so on failure the user keeps whatever they typed.
+    const settings = await loadSettings(area);
+    await saveSettings(area, { ...settings, mcpServers: [config] });
+    s.serverId = config.id;
     const caps = report.handshake.capabilities;
     s.client = client;
     s.handshake = report.handshake;
@@ -225,6 +228,9 @@ async function onBatch(name: string, btn: HTMLElement): Promise<void> {
   status(truncated ? `Ran ${lines.length} (capped at ${MAX_BATCH}).` : `Ran ${lines.length} call(s).`);
 }
 
+/** A client-side validation failure (e.g. a non-numeric value in a number field). */
+class ArgError extends Error {}
+
 /** Read the schema-form fields (or the raw-JSON box) into a tool-call argument object. */
 function readArgs(): unknown {
   const raw = $('mcpRawBox');
@@ -243,8 +249,13 @@ function readArgs(): unknown {
     }
     const raw = (f as HTMLInputElement | HTMLSelectElement).value.trim();
     if (raw === '') continue;
-    if (type === 'number') args[key] = Number(raw);
-    else if (type === 'json') args[key] = JSON.parse(raw);
+    if (type === 'number') {
+      // A typo like "1O" (letter O) → NaN, which JSON.stringify silently sends
+      // as null. Reject it client-side so the field never masquerades as a number.
+      const num = Number(raw);
+      if (Number.isNaN(num)) throw new ArgError(`"${key}" must be a number (got "${raw}").`);
+      args[key] = num;
+    } else if (type === 'json') args[key] = JSON.parse(raw);
     else args[key] = raw;
   }
   return args;
@@ -255,8 +266,9 @@ async function onCall(name: string): Promise<void> {
   let args: unknown;
   try {
     args = readArgs();
-  } catch {
-    setHtml('mcpToolResult', '<div class="mcp-err">Arguments are not valid JSON.</div>');
+  } catch (err) {
+    const msg = err instanceof ArgError ? err.message : 'Arguments are not valid JSON.';
+    setHtml('mcpToolResult', `<div class="mcp-err">${escapePre(msg)}</div>`);
     return;
   }
   setHtml('mcpToolResult', `Calling <code>${escapePre(name)}</code>…`);

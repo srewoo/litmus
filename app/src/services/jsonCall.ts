@@ -16,12 +16,24 @@ export async function callJson<T>(
   retries = 1,
 ): Promise<T> {
   let lastError: unknown;
+  let lastText = '';
   for (let attempt = 0; attempt <= retries; attempt++) {
     const req: ChatRequest =
       attempt === 0
         ? request
-        : { ...request, messages: [...request.messages, { role: 'user', content: NUDGE }] };
+        : {
+            ...request,
+            // Include the failed assistant turn so the model can see what it
+            // produced, and so the corrective nudge doesn't create two
+            // consecutive user turns.
+            messages: [
+              ...request.messages,
+              { role: 'assistant', content: lastText },
+              { role: 'user', content: NUDGE },
+            ],
+          };
     const res = await provider.chat(req, options);
+    lastText = res.text;
     try {
       return parse(res.text);
     } catch (err) {

@@ -91,4 +91,27 @@ describe('runLoopPass', () => {
     expect(second.version.parentId).toBe('v1');
     expect(second.cases).toHaveLength(1); // reused, not regenerated
   });
+
+  it('should still persist the version + run when the fixer throws, degrading to empty fixes', async () => {
+    const store = new InMemoryStore();
+    // Judge/aux provider that scores cases but throws for the fixer step, so a
+    // fully-paid eval must not be lost to an (advisory) fixer failure.
+    const flakyFixer: Provider = {
+      id: 'google',
+      async chat(req: ChatRequest) {
+        const sys = req.messages.find((m) => m.role === 'system')?.content ?? '';
+        if (sys.includes('prompt-improvement')) throw new Error('fixer boom');
+        return auxProvider.chat(req, { apiKey: 'sk-a' });
+      },
+    };
+    const result = await runLoopPass(
+      { systemPrompt: 'You are a bot.', note: 'baseline' },
+      { ...deps, store, judgeProvider: flakyFixer },
+    );
+
+    expect(result.fixes).toEqual([]); // degraded, not thrown
+    // The version + run are still persisted despite the fixer failure.
+    expect((await store.getVersions()).map((v) => v.id)).toEqual(['v1']);
+    expect((await store.getRun('v1'))?.summary.total).toBe(2);
+  });
 });

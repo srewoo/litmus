@@ -31,7 +31,19 @@ export async function generateEvalSuite(
   analysisHint?: string,
   onProgress?: (dimension: string, index: number, total: number) => void,
 ): Promise<EvalSuite> {
-  const dimensions = await extractDimensions(systemPrompt, deps, analysisHint);
+  const extracted = await extractDimensions(systemPrompt, deps, analysisHint);
+  // rubrics is keyed by dimension name, so duplicate names would collapse into
+  // one rubric while `dimensions` still listed both — progress would report N
+  // rubrics when only N-1 exist. Drop duplicates (first occurrence wins) so the
+  // rubric count always matches the dimension count.
+  const seen = new Set<string>();
+  const dimensions: Dimension[] = [];
+  for (const d of extracted) {
+    if (d && !seen.has(d.name)) {
+      seen.add(d.name);
+      dimensions.push(d);
+    }
+  }
   const rubrics: Record<string, string> = {};
   for (let i = 0; i < dimensions.length; i++) {
     const d = dimensions[i];

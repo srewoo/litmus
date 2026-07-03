@@ -44,7 +44,15 @@ export async function getKey(area: StorageArea, provider: ProviderId): Promise<s
 
 export async function deleteAllKeys(area: StorageArea): Promise<Settings> {
   const current = await loadSettings(area);
-  const next = SettingsSchema.parse({ ...current, keys: {} });
+  // Provider keys are not the only secrets: each configured MCP server may carry
+  // a bearer token in `authHeader` (schema.ts: McpServerConfigSchema). A "delete
+  // all keys" that left those behind would leak a live credential, so strip every
+  // authHeader here too. The field is optional, so we drop it entirely.
+  const next = SettingsSchema.parse({
+    ...current,
+    keys: {},
+    mcpServers: current.mcpServers.map(({ authHeader: _authHeader, ...server }) => server),
+  });
   await saveSettings(area, next);
   return next;
 }
