@@ -207,6 +207,34 @@ textarea.field{min-height:120px}
 /* settings modal */
 .iconbtn{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:7px;width:28px;height:26px;cursor:pointer;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}
 .iconbtn:hover{color:var(--text);border-color:var(--faint)}
+.iconbtn:disabled{opacity:.4;cursor:default}
+.iconbtn:disabled:hover{color:var(--muted);border-color:var(--line)}
+.wsbar{display:flex;align-items:center;gap:4px}
+.wspick{max-width:118px;border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:7px;height:26px;padding:0 6px;font-family:var(--mono);font-size:11px;font-weight:600;cursor:pointer}
+.wspick:hover{border-color:var(--faint)}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:4px 0 14px}
+.thumb{margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.thumb.bad{border-color:var(--coral-line)}
+.thumb img{display:block;width:100%;height:96px;object-fit:cover;background:var(--surface-3)}
+.thumb figcaption{font-family:var(--mono);font-size:9.5px;color:var(--muted);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bnote{margin:6px 0;padding:8px 11px;background:var(--surface-2);border:1px solid var(--line-soft);border-left:2px solid var(--amber);border-radius:7px;font-size:12px;line-height:1.5;color:var(--muted)}
+.composer-hint{margin:7px 0 0;font-size:11px;color:var(--muted)}
+.composer.dim{opacity:.55}
+.composer.dim:focus-within{opacity:1}
+.refinerow{margin-top:9px;flex-wrap:wrap;gap:6px}
+.btn.sm{padding:5px 9px;font-size:11.5px}
+/* Utility classes replacing inline style attributes (blocked by CSP style-src 'self'). */
+.mt0{margin-top:0}
+.mt6{margin-top:6px}
+.mt8{margin-top:8px}
+.mt9{margin-top:9px}
+.mt10{margin-top:10px}
+.mt11{margin-top:11px}
+.mt12{margin-top:12px}
+.mt14{margin-top:14px}
+.mb10{margin:0 0 10px}
+.tc{text-align:center}
+.btn.danger{color:var(--coral);border-color:var(--coral-line)}
 .modal{position:fixed;inset:0;background:rgba(16,32,43,.42);display:flex;align-items:flex-start;justify-content:center;padding:16px 12px;z-index:50;overflow-y:auto}
 .sheet{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 30px 60px -20px rgba(16,32,43,.5);width:100%;max-width:400px}
 .sheethead{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
@@ -266,9 +294,15 @@ textarea.rubric{min-height:240px;font-family:var(--mono);font-size:11px;line-hei
 .bub .bub-txt{white-space:pre-wrap;word-break:break-word}
 .bub.lit{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line-soft);color:var(--text);border-bottom-left-radius:3px}
 .bub.you{align-self:flex-end;background:var(--teal-dim);border:1px solid var(--teal-line);color:#0c6e5c;border-bottom-right-radius:3px}
-.bub .suggrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.bub .sugg{appearance:none;cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--teal);background:rgba(15,169,142,.16);border:1px solid var(--teal-line);border-radius:99px;padding:3px 9px}
+/* Suggestions are clickable "example answers" that fill the box — they can be a
+   few words OR a full multi-sentence example, so render them as left-aligned,
+   wrapping cards (stacked), not fixed-width centered pills (which overflowed). */
+.bub .suggrow{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.bub .sugg{position:relative;appearance:none;cursor:pointer;width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.5;font-family:var(--mono);font-size:11.5px;font-weight:600;color:var(--teal);background:rgba(15,169,142,.16);border:1px solid var(--teal-line);border-radius:9px;padding:8px 26px 8px 11px}
+/* Corner affordance so it's clear the card is tappable (fills the box). */
+.bub .sugg::after{content:"↵";position:absolute;top:7px;right:9px;font-size:12px;opacity:.45}
 .bub .sugg:hover{background:var(--teal);color:#fff}
+.bub .sugg:hover::after{opacity:.9}
 .composer{margin-top:4px}
 .bub.pending{padding:11px 13px}
 .bub .dots{display:inline-flex;gap:4px;align-items:center}

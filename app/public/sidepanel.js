@@ -4247,6 +4247,55 @@
     /** Run against this configured MCP server instead of mock tools (ADR 0003). */
     mcpServerId: external_exports.string().min(1).optional()
   });
+  var ImageExpectationSchema = external_exports.object({
+    kind: external_exports.literal("image"),
+    width: external_exports.number().int().positive().optional(),
+    height: external_exports.number().int().positive().optional(),
+    formats: external_exports.array(external_exports.string().min(1)).optional(),
+    count: external_exports.number().int().positive().optional(),
+    mustContain: external_exports.array(external_exports.string().min(1)).optional(),
+    mustNotContain: external_exports.array(external_exports.string().min(1)).optional(),
+    text: external_exports.string().optional(),
+    maxRefDistance: external_exports.number().min(0).optional()
+  });
+  var VideoExpectationSchema = external_exports.object({
+    kind: external_exports.literal("video"),
+    durationSec: external_exports.number().positive().optional(),
+    durationToleranceSec: external_exports.number().min(0).optional(),
+    width: external_exports.number().int().positive().optional(),
+    height: external_exports.number().int().positive().optional(),
+    fps: external_exports.number().positive().optional(),
+    formats: external_exports.array(external_exports.string().min(1)).optional(),
+    hasAudio: external_exports.boolean().optional(),
+    minFrames: external_exports.number().int().positive().optional(),
+    maxFlicker: external_exports.number().min(0).max(1).optional(),
+    mustContain: external_exports.array(external_exports.string().min(1)).optional()
+  });
+  var VoiceExpectationSchema = external_exports.object({
+    kind: external_exports.literal("voice"),
+    text: external_exports.string().optional(),
+    maxWer: external_exports.number().min(0).max(1).optional(),
+    language: external_exports.string().min(1).optional(),
+    minDurationSec: external_exports.number().min(0).optional(),
+    maxDurationSec: external_exports.number().min(0).optional(),
+    voiceId: external_exports.string().min(1).optional(),
+    minVoiceSimilarity: external_exports.number().min(0).max(1).optional()
+  });
+  var DocumentExpectationSchema = external_exports.object({
+    kind: external_exports.literal("document"),
+    format: external_exports.enum(["pdf", "pptx"]).optional(),
+    pageCount: external_exports.number().int().positive().optional(),
+    sections: external_exports.array(external_exports.string().min(1)).optional(),
+    requiredData: external_exports.array(external_exports.string().min(1)).optional(),
+    minTables: external_exports.number().int().min(0).optional(),
+    noPlaceholders: external_exports.boolean().optional()
+  });
+  var MediaExpectationSchema = external_exports.discriminatedUnion("kind", [
+    ImageExpectationSchema,
+    VideoExpectationSchema,
+    VoiceExpectationSchema,
+    DocumentExpectationSchema
+  ]);
   var PromptBuilderTurnSchema = external_exports.discriminatedUnion("kind", [
     external_exports.object({
       kind: external_exports.literal("question"),
@@ -4518,6 +4567,111 @@
       await this.enqueue(() => this.writeBlob({ versions: [], runs: {} }));
     }
   };
+
+  // src/platform/workspaces.ts
+  var WORKSPACE_INDEX_KEY = "litmus:workspaces";
+  var WORKSPACE_SCHEMA_VERSION = 1;
+  var DEFAULT_WORKSPACE_ID = "default";
+  var DEFAULT_WORKSPACE_NAME = "Default";
+  function defaultIndex() {
+    return {
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      activeId: DEFAULT_WORKSPACE_ID,
+      workspaces: [{ id: DEFAULT_WORKSPACE_ID, name: DEFAULT_WORKSPACE_NAME, createdAt: 0 }]
+    };
+  }
+  function asWorkspace(value) {
+    if (typeof value !== "object" || value === null) return null;
+    const v2 = value;
+    const id = v2["id"];
+    const name = v2["name"];
+    if (typeof id !== "string" || id.length === 0) return null;
+    if (typeof name !== "string" || name.length === 0) return null;
+    const createdAt = typeof v2["createdAt"] === "number" ? v2["createdAt"] : 0;
+    return { id, name, createdAt };
+  }
+  function asIndex(value) {
+    if (typeof value !== "object" || value === null) return defaultIndex();
+    const v2 = value;
+    const raw = Array.isArray(v2["workspaces"]) ? v2["workspaces"] : [];
+    const workspaces = raw.map(asWorkspace).filter((w) => w !== null);
+    if (workspaces.length === 0) return defaultIndex();
+    const activeRaw = v2["activeId"];
+    const activeId = typeof activeRaw === "string" && workspaces.some((w) => w.id === activeRaw) ? activeRaw : workspaces[0].id;
+    return { schemaVersion: WORKSPACE_SCHEMA_VERSION, activeId, workspaces };
+  }
+  function workspaceKey(id) {
+    return `${VERSION_KEY_PREFIX}${id}`;
+  }
+  async function readIndex(area3) {
+    try {
+      const got = await area3.get(WORKSPACE_INDEX_KEY);
+      return asIndex(got[WORKSPACE_INDEX_KEY]);
+    } catch {
+      return defaultIndex();
+    }
+  }
+  async function writeIndex(area3, index) {
+    await area3.set({
+      [WORKSPACE_INDEX_KEY]: {
+        schemaVersion: WORKSPACE_SCHEMA_VERSION,
+        activeId: index.activeId,
+        workspaces: index.workspaces
+      }
+    });
+  }
+  async function activeWorkspaceId(area3) {
+    return (await readIndex(area3)).activeId;
+  }
+  async function activeWorkspaceKey(area3) {
+    return workspaceKey(await activeWorkspaceId(area3));
+  }
+  function cleanName(name) {
+    const trimmed = name.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 80) : "Untitled";
+  }
+  async function createWorkspace(area3, name, deps) {
+    const index = await readIndex(area3);
+    const id = deps.genId();
+    const workspace = { id, name: cleanName(name), createdAt: deps.now() };
+    const next = {
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      activeId: id,
+      workspaces: [...index.workspaces, workspace]
+    };
+    await writeIndex(area3, next);
+    return next;
+  }
+  async function renameWorkspace(area3, id, name) {
+    const index = await readIndex(area3);
+    const next = {
+      ...index,
+      workspaces: index.workspaces.map((w) => w.id === id ? { ...w, name: cleanName(name) } : w)
+    };
+    await writeIndex(area3, next);
+    return next;
+  }
+  async function setActive(area3, id) {
+    const index = await readIndex(area3);
+    if (!index.workspaces.some((w) => w.id === id)) return index;
+    const next = { ...index, activeId: id };
+    await writeIndex(area3, next);
+    return next;
+  }
+  async function deleteWorkspace(area3, id) {
+    const index = await readIndex(area3);
+    const remaining = index.workspaces.filter((w) => w.id !== id);
+    await area3.remove(workspaceKey(id));
+    if (remaining.length === 0) {
+      const fresh = defaultIndex();
+      await writeIndex(area3, fresh);
+      return fresh;
+    }
+    const activeId = index.activeId === id ? remaining[0].id : index.activeId;
+    const next = { schemaVersion: WORKSPACE_SCHEMA_VERSION, activeId, workspaces: remaining };
+    await writeIndex(area3, next);
+    return next;
+  }
 
   // src/providers/types.ts
   var DEFAULT_MAX_TOKENS = 16e3;
@@ -5145,6 +5299,21 @@
     return TargetModelSchema.parse({ provider, model });
   }
 
+  // src/providers/mediaCapability.ts
+  var IMAGE = /(gpt-image|dall-?e|imagen|stable-?diffusion|(^|[^a-z])sd(xl|\d)|flux|firefly|seedream|nano-banana|ideogram|recraft)/i;
+  var VIDEO = /(sora|veo|runway|gen-\d|kling|pika|luma|wan\d|seedance|ltx|mochi|hunyuan-?video)/i;
+  var VOICE = /(tts|text-to-speech|\bspeech\b|eleven|playht|musicgen|audiogen|\bbark\b|suno|\bvoice\b)/i;
+  function mediaCapability(_provider, model) {
+    if (IMAGE.test(model)) return "image";
+    if (VIDEO.test(model)) return "video";
+    if (VOICE.test(model)) return "voice";
+    return "unknown";
+  }
+  function mediaModelMismatch(provider, model, kind) {
+    const cap = mediaCapability(provider, model);
+    return cap !== "unknown" && cap !== kind;
+  }
+
   // src/ui/providerDeps.ts
   function resolveJudgeModel(settings, target) {
     const raw = settings.judgeModel?.trim();
@@ -5154,6 +5323,36 @@
     const known = settings.availableModels?.[target.provider];
     if (known && known.length > 0 && !known.includes(id)) return target.model;
     return id;
+  }
+  function bareId(id) {
+    if (!id) return void 0;
+    return id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+  }
+  function resolveVisionModel(settings) {
+    const isVisionChat = (id) => !!id && isChatModel("openai", id) && mediaCapability("openai", id) === "unknown";
+    const judge = bareId(settings.judgeModel);
+    if (isVisionChat(judge)) return judge;
+    if (settings.defaultTarget?.provider === "openai" && isVisionChat(settings.defaultTarget.model)) {
+      return settings.defaultTarget.model;
+    }
+    const discovered = (settings.availableModels?.openai ?? []).find(isVisionChat);
+    return discovered ?? "gpt-4o";
+  }
+  var DEFAULT_CHAT_MODEL = {
+    openai: "gpt-5.5",
+    anthropic: "claude-sonnet-4-6",
+    google: "gemini-2.5-pro"
+  };
+  function resolveArchitectModel(settings, target) {
+    const isChat = (id) => !!id && isChatModel(target.provider, id) && mediaCapability(target.provider, id) === "unknown";
+    if (isChat(target.model)) return target.model;
+    const judge = bareId(settings.judgeModel);
+    if (isChat(judge)) return judge;
+    if (settings.defaultTarget?.provider === target.provider && isChat(settings.defaultTarget.model)) {
+      return settings.defaultTarget.model;
+    }
+    const discovered = (settings.availableModels?.[target.provider] ?? []).find(isChat);
+    return discovered ?? DEFAULT_CHAT_MODEL[target.provider];
   }
   function buildWiring(settings, target, factory) {
     const key = settings.keys[target.provider];
@@ -5237,15 +5436,25 @@
     "Rules:",
     "- Work one turn at a time. Respond with ONLY JSON \u2014 no prose, no markdown fences.",
     "- If you still need information to write a strong prompt, ask ONE round of clarifying questions (bundle 1-3 tightly related questions into a single message). Cover the essentials first: the assistant's role and goal, the audience, the expected output format/structure, tone, hard constraints and guardrails, and any tools or knowledge it relies on. Never ask about something the user already told you.",
-    '- When it helps the user reply quickly, offer concrete example answers in "suggestions".',
+    '- When it helps the user reply quickly, offer up to 3 concrete example answers in "suggestions". Keep each SHORT \u2014 a phrase or a single sentence the user could tap to answer \u2014 never multiple sentences or paragraphs packed into one suggestion.',
     "- Keep the interview short \u2014 at most about 5 rounds, and prefer fewer. As soon as you can write a strong prompt, or the user asks you to generate, output the final system prompt and make reasonable assumptions for anything still unspecified.",
     "",
     "Respond with exactly one of these JSON shapes:",
     '- To ask: {"kind":"question","message":string,"suggestions":string[]}',
     '- To deliver: {"kind":"prompt","systemPrompt":string,"summary":string}',
     "",
-    "The systemPrompt must be a complete, ready-to-use system prompt addressed to the model in the second person, with a clear role, behavior, output contract, and guardrails. The summary is one sentence on what you built and any assumptions you made."
+    "The systemPrompt must be a complete, ready-to-use system prompt, addressed to the model in the second person. It MUST cover, in this order, whether or not the user asked: (1) ROLE \u2014 one line on who the model is and its goal; (2) BEHAVIOR \u2014 how it should approach the task; (3) OUTPUT CONTRACT \u2014 the exact required output shape (for structured tasks, give an explicit schema or format, not a vague description); (4) GUARDRAILS \u2014 what it must never do, and how to handle out-of-scope or ambiguous input. Prefer specific, testable instructions over generic advice; do not pad.",
+    "The summary is one sentence naming what you built AND, explicitly, any assumptions you made for unspecified details (so the user can correct them).",
+    "",
+    "Example of the delivery shape (structure and specificity to match; adapt the content to the user's task):",
+    `{"kind":"prompt","systemPrompt":"You are a support-ticket triage assistant for a B2B SaaS help desk. Your goal is to classify each incoming ticket and extract routing fields.\\n\\nBehavior: Read the ticket, decide the single best category, and pull the requested fields. If information is missing, use null \u2014 never guess.\\n\\nOutput contract: Return ONLY valid JSON: {\\"category\\": one of [\\"billing\\",\\"bug\\",\\"how-to\\",\\"feature-request\\"], \\"priority\\": one of [\\"low\\",\\"medium\\",\\"high\\"], \\"summary\\": string (<=20 words)}. No prose outside the JSON.\\n\\nGuardrails: Never invent a category outside the list. Never include PII in the summary. If the ticket is empty or unintelligible, return category \\"how-to\\" with priority \\"low\\" and summary \\"unclear request\\".","summary":"Built a JSON-only ticket-triage classifier; assumed a fixed 4-category taxonomy and low/medium/high priority since you didn't specify."}`
   ].join("\n");
+  var REFINEMENTS = {
+    regenerate: "Regenerate the system prompt with a fresh take on the same requirements \u2014 different structure or wording, same intent.",
+    stricter: "Rewrite the system prompt to be stricter: tighten the guardrails, remove ambiguity, and make constraints explicit and testable.",
+    shorter: "Rewrite the system prompt to be more concise \u2014 keep every essential instruction and the output contract, cut padding and repetition.",
+    json: "Rewrite the system prompt so the model must return strict, valid JSON, with an explicit schema (field names, types, and allowed values) in the output contract."
+  };
   var FORCE_GENERATE = 'Generate the final system prompt now from everything gathered so far. Make reasonable assumptions for anything unspecified. Respond with the {"kind":"prompt",...} shape.';
   function buildBuilderMessages(conversation, forceGenerate = false) {
     const messages = [{ role: "system", content: BUILDER_SYSTEM }, ...conversation];
@@ -5966,6 +6175,289 @@ ${output}`
     return { passed, score, rationale: bits.join(" \xB7 "), dimensions };
   }
 
+  // src/services/packs/types.ts
+  function foldChecks(reasons, checks) {
+    const dimensions = checks.map((c) => ({ dimension: c.dimension, score: c.score }));
+    const passed = reasons.length === 0;
+    const score = passed ? dimensions.length ? round1(mean(dimensions.map((d) => d.score))) : 10 : 0;
+    return { passed, score, reasons, dimensions };
+  }
+  function describeCheck(kind, result) {
+    return result.passed ? `${kind} checks passed (score ${result.score}/10).` : `${kind} check failed: ${result.reasons.join("; ")}`;
+  }
+
+  // src/services/packs/image.ts
+  function presenceFraction(have, wanted) {
+    if (wanted.length === 0) return 1;
+    const hay = have.map((l) => l.toLowerCase());
+    const hits = wanted.filter((w) => hay.some((l) => l.includes(w.toLowerCase()))).length;
+    return hits / wanted.length;
+  }
+  function checkImage(signals, exp) {
+    const reasons = [];
+    const checks = [];
+    if (signals.safetyBlocked) reasons.push("image generation was safety-blocked");
+    if (!signals.decoded) reasons.push("output did not decode as a valid image");
+    if (exp.formats && exp.formats.length > 0 && !exp.formats.map((f) => f.toLowerCase()).includes(signals.format.toLowerCase())) {
+      reasons.push(`format ${signals.format} is not one of ${exp.formats.join("/")}`);
+    }
+    if (exp.width !== void 0 && signals.width !== exp.width) reasons.push(`width ${signals.width} \u2260 requested ${exp.width}`);
+    if (exp.height !== void 0 && signals.height !== exp.height) reasons.push(`height ${signals.height} \u2260 requested ${exp.height}`);
+    if (exp.count !== void 0 && signals.count !== exp.count) reasons.push(`returned ${signals.count} image(s), requested ${exp.count}`);
+    if (exp.mustContain && exp.mustContain.length > 0) {
+      const frac = presenceFraction(signals.labels, exp.mustContain);
+      checks.push({ dimension: "object_presence", score: round1(frac * 10) });
+      if (frac < 1) {
+        const missing = exp.mustContain.filter((w) => !signals.labels.some((l) => l.toLowerCase().includes(w.toLowerCase())));
+        reasons.push(`missing requested element(s): ${missing.join(", ")}`);
+      }
+    }
+    if (exp.mustNotContain && exp.mustNotContain.length > 0) {
+      const present = exp.mustNotContain.filter((w) => signals.labels.some((l) => l.toLowerCase().includes(w.toLowerCase())));
+      checks.push({ dimension: "negative_adherence", score: present.length === 0 ? 10 : 0 });
+      if (present.length > 0) reasons.push(`forbidden element(s) present: ${present.join(", ")}`);
+    }
+    if (exp.text !== void 0 && exp.text.length > 0) {
+      const ok = signals.ocrText.toLowerCase().includes(exp.text.toLowerCase());
+      checks.push({ dimension: "text_render", score: ok ? 10 : 0 });
+      if (!ok) reasons.push(`requested text "${exp.text}" not found in image`);
+    }
+    if (exp.maxRefDistance !== void 0 && signals.refDistance !== void 0) {
+      const ok = signals.refDistance <= exp.maxRefDistance;
+      const score = round1(Math.max(0, 10 - signals.refDistance / Math.max(exp.maxRefDistance, 1e-6) * 5));
+      checks.push({ dimension: "edit_consistency", score });
+      if (!ok) reasons.push(`edit changed too much (distance ${signals.refDistance} > ${exp.maxRefDistance})`);
+    }
+    return foldChecks(reasons, checks);
+  }
+
+  // src/services/packs/video.ts
+  var DEFAULT_DURATION_TOLERANCE = 0.5;
+  var DEFAULT_MAX_FLICKER = 0.2;
+  function presenceFraction2(have, wanted) {
+    if (wanted.length === 0) return 1;
+    const hay = have.map((l) => l.toLowerCase());
+    return wanted.filter((w) => hay.some((l) => l.includes(w.toLowerCase()))).length / wanted.length;
+  }
+  function checkVideo(signals, exp) {
+    const reasons = [];
+    const checks = [];
+    if (signals.safetyBlocked) reasons.push("video generation was safety-blocked");
+    if (!signals.decoded) reasons.push("output did not decode as a valid video");
+    if (exp.durationSec !== void 0) {
+      const tol = exp.durationToleranceSec ?? DEFAULT_DURATION_TOLERANCE;
+      if (Math.abs(signals.durationSec - exp.durationSec) > tol) {
+        reasons.push(`duration ${signals.durationSec}s not within ${tol}s of requested ${exp.durationSec}s`);
+      }
+    }
+    if (exp.width !== void 0 && signals.width !== exp.width) reasons.push(`width ${signals.width} \u2260 requested ${exp.width}`);
+    if (exp.height !== void 0 && signals.height !== exp.height) reasons.push(`height ${signals.height} \u2260 requested ${exp.height}`);
+    if (exp.fps !== void 0 && signals.fps !== exp.fps) reasons.push(`fps ${signals.fps} \u2260 requested ${exp.fps}`);
+    if (exp.formats && exp.formats.length > 0 && !exp.formats.map((f) => f.toLowerCase()).includes(signals.format.toLowerCase())) {
+      reasons.push(`format ${signals.format} is not one of ${exp.formats.join("/")}`);
+    }
+    if (exp.hasAudio !== void 0 && signals.hasAudio !== exp.hasAudio) {
+      reasons.push(exp.hasAudio ? "expected an audio track, none present" : "unexpected audio track present");
+    }
+    if (exp.minFrames !== void 0 && signals.frameCount < exp.minFrames) {
+      reasons.push(`only ${signals.frameCount} frames, expected \u2265 ${exp.minFrames}`);
+    }
+    const maxFlicker = exp.maxFlicker ?? DEFAULT_MAX_FLICKER;
+    checks.push({ dimension: "temporal_coherence", score: round1(Math.max(0, (1 - signals.flicker) * 10)) });
+    if (signals.flicker > maxFlicker) reasons.push(`flicker ${signals.flicker} exceeds max ${maxFlicker}`);
+    if (exp.mustContain && exp.mustContain.length > 0) {
+      const frac = presenceFraction2(signals.labels, exp.mustContain);
+      checks.push({ dimension: "motion_content", score: round1(frac * 10) });
+      if (frac < 1) {
+        const missing = exp.mustContain.filter((w) => !signals.labels.some((l) => l.toLowerCase().includes(w.toLowerCase())));
+        reasons.push(`element(s) not seen across sampled frames: ${missing.join(", ")}`);
+      }
+    }
+    return foldChecks(reasons, checks);
+  }
+  function videoCoverageNote(signals) {
+    return `sampled ${signals.sampledFrames}/${signals.frameCount} frame(s)`;
+  }
+
+  // src/services/packs/voice.ts
+  var DEFAULT_MAX_WER = 0.15;
+  var DEFAULT_MIN_VOICE_SIMILARITY = 0.7;
+  var SILENCE_FLOOR = 1e-3;
+  function checkVoice(signals, exp) {
+    const reasons = [];
+    const checks = [];
+    if (!signals.decoded) reasons.push("output did not decode as valid audio");
+    if (signals.sampleRate <= 0) reasons.push("audio has no valid sample rate");
+    if (signals.channels <= 0) reasons.push("audio has no channels");
+    if (signals.rms <= SILENCE_FLOOR) reasons.push("audio is silent (no speech energy)");
+    if (signals.clipping) reasons.push("audio clips (distorted peaks)");
+    if (exp.minDurationSec !== void 0 && signals.durationSec < exp.minDurationSec) {
+      reasons.push(`duration ${signals.durationSec}s below min ${exp.minDurationSec}s`);
+    }
+    if (exp.maxDurationSec !== void 0 && signals.durationSec > exp.maxDurationSec) {
+      reasons.push(`duration ${signals.durationSec}s above max ${exp.maxDurationSec}s`);
+    }
+    if (exp.text !== void 0 && exp.text.length > 0 && signals.wer !== void 0) {
+      const maxWer = exp.maxWer ?? DEFAULT_MAX_WER;
+      checks.push({ dimension: "transcription_accuracy", score: round1(clamp(1 - signals.wer, 0, 1) * 10) });
+      if (signals.wer > maxWer) reasons.push(`ASR word-error-rate ${round1(signals.wer)} exceeds max ${maxWer}`);
+    }
+    if (exp.language !== void 0) {
+      const ok = signals.language.toLowerCase().startsWith(exp.language.toLowerCase());
+      checks.push({ dimension: "language_match", score: ok ? 10 : 0 });
+      if (!ok) reasons.push(`detected language "${signals.language}" \u2260 requested "${exp.language}"`);
+    }
+    if (exp.voiceId !== void 0 && signals.voiceSimilarity !== void 0) {
+      const min = exp.minVoiceSimilarity ?? DEFAULT_MIN_VOICE_SIMILARITY;
+      checks.push({ dimension: "voice_similarity", score: round1(clamp(signals.voiceSimilarity, 0, 1) * 10) });
+      if (signals.voiceSimilarity < min) {
+        reasons.push(`voice similarity ${round1(signals.voiceSimilarity)} below min ${min}`);
+      }
+    }
+    return foldChecks(reasons, checks);
+  }
+
+  // src/services/packs/document.ts
+  function fractionPresent(haystack, needles) {
+    if (needles.length === 0) return { frac: 1, missing: [] };
+    const hay = haystack.toLowerCase();
+    const missing = needles.filter((n) => !hay.includes(n.toLowerCase()));
+    return { frac: (needles.length - missing.length) / needles.length, missing };
+  }
+  function checkDocument(signals, exp) {
+    const reasons = [];
+    const checks = [];
+    if (!signals.parsed) reasons.push("output did not parse as a valid document");
+    if (exp.format !== void 0 && signals.format.toLowerCase() !== exp.format.toLowerCase()) {
+      reasons.push(`format ${signals.format} \u2260 requested ${exp.format}`);
+    }
+    if (exp.pageCount !== void 0 && signals.pageCount !== exp.pageCount) {
+      reasons.push(`${signals.pageCount} page(s)/slide(s), requested ${exp.pageCount}`);
+    }
+    if (signals.hasCorruptEmbeds) reasons.push("one or more embedded images/charts are corrupt");
+    if ((exp.noPlaceholders ?? true) && signals.placeholders.length > 0) {
+      reasons.push(`unresolved placeholder(s): ${signals.placeholders.join(", ")}`);
+    }
+    if (exp.requiredData && exp.requiredData.length > 0) {
+      const { frac, missing } = fractionPresent(signals.text, exp.requiredData);
+      checks.push({ dimension: "data_fidelity", score: round1(frac * 10) });
+      if (missing.length > 0) reasons.push(`missing/mismatched data point(s): ${missing.join(", ")}`);
+    }
+    if (exp.sections && exp.sections.length > 0) {
+      const { frac, missing } = fractionPresent(signals.text, exp.sections);
+      checks.push({ dimension: "section_presence", score: round1(frac * 10) });
+      if (missing.length > 0) reasons.push(`missing section(s): ${missing.join(", ")}`);
+    }
+    if (exp.minTables !== void 0) {
+      const ok = signals.tableCount >= exp.minTables;
+      checks.push({ dimension: "table_structure", score: ok ? 10 : round1(signals.tableCount / Math.max(exp.minTables, 1) * 10) });
+      if (!ok) reasons.push(`${signals.tableCount} table(s), expected \u2265 ${exp.minTables}`);
+    }
+    return foldChecks(reasons, checks);
+  }
+
+  // src/services/packs/index.ts
+  function checkMedia(signals, expectation) {
+    if (signals.kind !== expectation.kind) {
+      return foldChecks([`signal kind "${signals.kind}" does not match expectation kind "${expectation.kind}"`], []);
+    }
+    switch (signals.kind) {
+      case "image":
+        return checkImage(signals, expectation);
+      case "video":
+        return checkVideo(signals, expectation);
+      case "voice":
+        return checkVoice(signals, expectation);
+      case "document":
+        return checkDocument(signals, expectation);
+    }
+  }
+
+  // src/services/mediaRun.ts
+  function titleCase(kind) {
+    return kind.charAt(0).toUpperCase() + kind.slice(1);
+  }
+  async function mediaCaseResult(systemPrompt, evalCase, generator, signal) {
+    const expectation = evalCase.media;
+    const { signals, timing } = await generator(evalCase, { systemPrompt, ...signal ? { signal } : {} });
+    const verdict = checkMedia(signals, expectation);
+    let rationale = describeCheck(titleCase(expectation.kind), verdict);
+    if (signals.kind === "video") rationale += ` \xB7 ${videoCoverageNote(signals)}`;
+    return {
+      caseId: evalCase.id,
+      output: JSON.stringify(signals),
+      score: verdict.score,
+      passed: verdict.passed,
+      rationale,
+      timing,
+      ...verdict.dimensions.length ? { dimensions: verdict.dimensions } : {}
+    };
+  }
+
+  // src/core/cost.ts
+  var MEDIA_PRICES = {
+    image: 0.04,
+    video: 0.5,
+    voice: 0.03,
+    document: 0.02
+  };
+  function mediaCostUsd(kind) {
+    return MEDIA_PRICES[kind];
+  }
+  var SpendCapExceededError = class extends Error {
+    constructor(spentUsd, capUsd) {
+      super(`litmus: run stopped \u2014 spend cap $${capUsd} would be exceeded (spent ~$${spentUsd.toFixed(4)})`);
+      this.spentUsd = spentUsd;
+      this.capUsd = capUsd;
+      this.name = "SpendCapExceededError";
+    }
+  };
+  var PRICES = {
+    "gpt-5.1": { in: 5e-3, out: 0.015 },
+    "gpt-5.1-mini": { in: 6e-4, out: 24e-4 },
+    "claude-sonnet-4.6": { in: 3e-3, out: 0.015 },
+    "gemini-2.5-pro": { in: 125e-5, out: 5e-3 }
+  };
+  var DEFAULT_PRICE = { in: 5e-3, out: 0.015 };
+  function priceFor(model) {
+    return PRICES[model] ?? DEFAULT_PRICE;
+  }
+  function costForCall(model, inputTokens, outputTokens) {
+    const p = priceFor(model);
+    const ti = Math.max(0, inputTokens);
+    const to = Math.max(0, outputTokens);
+    return ti / 1e3 * p.in + to / 1e3 * p.out;
+  }
+  function roundUsd(n) {
+    return Math.round(n * 1e4) / 1e4;
+  }
+  function estimateRun(input) {
+    const caseCount = Math.max(0, input.caseCount);
+    const ti = Math.max(0, input.avgInputTokens);
+    const to = Math.max(0, input.avgOutputTokens);
+    let calls = 0;
+    let usd = 0;
+    const add = (model, n) => {
+      calls += n;
+      usd += n * costForCall(model, ti, to);
+    };
+    if (input.includeAnalysis) add(input.analyzerModel, 1);
+    if (input.includeEvalGen) add(input.analyzerModel, 1);
+    add(input.targetModel, caseCount);
+    if (input.includeJudge !== false) {
+      const judgeSamples = Math.max(1, Math.floor(input.judgeSamples ?? 1));
+      add(input.judgeModel, caseCount * judgeSamples);
+    }
+    if (input.includeFixes) add(input.analyzerModel, 1);
+    return { totalCalls: calls, estUsd: roundUsd(usd) };
+  }
+  function exceedsCap(estimate, capUsd) {
+    return estimate.estUsd > capUsd;
+  }
+  function formatUsd(usd) {
+    return usd < 0.01 ? `~$${usd.toFixed(4)}` : `~$${usd.toFixed(2)}`;
+  }
+
   // src/services/agentStep.ts
   function toChatMessages(turns) {
     return turns.map((t) => ({
@@ -6490,6 +6982,19 @@ ${output}`
     const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
     const isToolCase = evalCase.toolExpectations !== void 0;
     try {
+      if (evalCase.media) {
+        if (!deps.mediaGenerator) {
+          return {
+            caseId: evalCase.id,
+            output: "",
+            score: 0,
+            passed: false,
+            rationale: `Media case requires a configured media generator for ${evalCase.media.kind}, none provided.`,
+            timing: ZERO_TIMING
+          };
+        }
+        return await mediaCaseResult(systemPrompt, evalCase, deps.mediaGenerator, deps.signal);
+      }
       if ((isToolCase || evalCase.scenario) && !supportsTools(deps.target.provider, deps.target.model)) {
         return {
           caseId: evalCase.id,
@@ -6557,14 +7062,192 @@ ${output}`
     const samples = positiveCount(deps.samples ?? 1);
     const concurrency = positiveCount(deps.concurrency ?? 1);
     let done = 0;
+    let spent = 0;
     const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
       throwIfAborted(deps.signal);
+      if (deps.budget) {
+        const cost = Math.max(0, deps.budget.costOf(evalCase)) * samples;
+        if (spent + cost > deps.budget.capUsd) throw new SpendCapExceededError(spent, deps.budget.capUsd);
+        spent += cost;
+      }
       const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
       deps.onProgress?.(++done, cases.length);
       return r;
     });
     throwIfAborted(deps.signal);
     return { results, summary: summarizeRun(results, threshold) };
+  }
+
+  // src/services/gen/imageGenerator.ts
+  function composePrompt(systemPrompt, input) {
+    return [systemPrompt.trim(), input.trim()].filter((s2) => s2.length > 0).join("\n\n");
+  }
+  function sizeOf(exp) {
+    return exp.width && exp.height ? `${exp.width}x${exp.height}` : void 0;
+  }
+  function makeImageGenerator(deps) {
+    return async (evalCase, ctx) => {
+      const exp = evalCase.media?.kind === "image" ? evalCase.media : {};
+      const opts = {
+        apiKey: deps.apiKey,
+        ...deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {},
+        ...deps.clock ? { clock: deps.clock } : {},
+        ...ctx.signal ? { signal: ctx.signal } : {}
+      };
+      const req = {
+        model: deps.model,
+        prompt: composePrompt(ctx.systemPrompt, evalCase.input),
+        ...exp.count ? { n: exp.count } : {},
+        ...sizeOf(exp) ? { size: sizeOf(exp) } : {}
+      };
+      const out = await deps.generate(req, opts);
+      if (out.safetyBlocked || out.images.length === 0) {
+        const signals2 = {
+          kind: "image",
+          decoded: false,
+          width: 0,
+          height: 0,
+          format: out.format,
+          count: out.images.length,
+          safetyBlocked: out.safetyBlocked,
+          labels: [],
+          ocrText: ""
+        };
+        return { signals: signals2, timing: out.timing };
+      }
+      const first = out.images[0];
+      deps.onArtifact?.(evalCase.id, first);
+      const [probed, described] = await Promise.all([
+        deps.probe(first.bytes, first.mime),
+        deps.describe ? deps.describe(first.bytes, first.mime) : Promise.resolve({ labels: [], ocrText: "" })
+      ]);
+      const signals = {
+        kind: "image",
+        decoded: probed.decoded,
+        width: probed.width,
+        height: probed.height,
+        format: out.format,
+        count: out.images.length,
+        safetyBlocked: false,
+        labels: described.labels,
+        ocrText: described.ocrText
+      };
+      return { signals, timing: out.timing };
+    };
+  }
+
+  // src/providers/openaiImage.ts
+  var ENDPOINT3 = "https://api.openai.com/v1/images/generations";
+  function isSafetyRefusal(body) {
+    return /content_policy|moderation_blocked|safety/i.test(body);
+  }
+  function decodeBase64(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function bytesFromUrl(url, fetchImpl, signal) {
+    const res = await fetchImpl(url, { method: "GET", headers: {}, ...signal ? { signal } : {} });
+    if (!res.ok) throw new ProviderError("openai", res.status, `image URL fetch failed`);
+    const buf = decodeBase64(btoa(await res.text()));
+    const mime = res.headers?.get("content-type") ?? "image/png";
+    return { bytes: buf, mime };
+  }
+  async function generateOpenAIImage(req, opts) {
+    const fetchImpl = opts.fetchImpl ?? defaultFetch();
+    const clock = opts.clock ?? (() => Date.now());
+    const start = clock();
+    const body = JSON.stringify({
+      model: req.model,
+      prompt: req.prompt,
+      n: req.n ?? 1,
+      ...req.size ? { size: req.size } : {}
+    });
+    const res = await fetchImpl(ENDPOINT3, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
+      body,
+      ...opts.signal ? { signal: opts.signal } : {}
+    });
+    const raw = await res.text();
+    const elapsed = Math.max(0, clock() - start);
+    const timing = { ttfbMs: elapsed, totalMs: elapsed, tokens: 0, tokensPerSec: 0 };
+    if (!res.ok) {
+      if (isSafetyRefusal(raw)) return { images: [], format: "none", safetyBlocked: true, timing };
+      throw new ProviderError("openai", res.status, raw, req.model);
+    }
+    const json = JSON.parse(raw);
+    const format = json.output_format ?? "png";
+    const mime = `image/${format}`;
+    const items = json.data ?? [];
+    const images = [];
+    for (const item of items) {
+      if (item.b64_json) images.push({ bytes: decodeBase64(item.b64_json), mime });
+      else if (item.url) images.push(await bytesFromUrl(item.url, fetchImpl, opts.signal));
+    }
+    return { images, format, safetyBlocked: false, timing };
+  }
+
+  // src/providers/openaiVision.ts
+  var ENDPOINT4 = "https://api.openai.com/v1/chat/completions";
+  var SYSTEM_PROMPT = 'You are a precise vision analyst. Respond with JSON only: {"labels": string[], "ocrText": string}. `labels` lists the concrete objects and visual elements actually visible in the image (lowercase noun phrases). `ocrText` is all text rendered in the image, verbatim, or "" if none. Do not infer or add anything not visible.';
+  var VisionSchema = external_exports.object({
+    labels: external_exports.array(external_exports.string()).default([]),
+    ocrText: external_exports.string().default("")
+  });
+  function encodeBase64(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  async function describeOpenAIImage(bytes, mime, opts) {
+    const fetchImpl = opts.fetchImpl ?? defaultFetch();
+    const dataUrl = `data:${mime};base64,${encodeBase64(bytes)}`;
+    const body = JSON.stringify({
+      model: opts.model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Describe this image as instructed." },
+            { type: "image_url", image_url: { url: dataUrl } }
+          ]
+        }
+      ],
+      response_format: { type: "json_object" }
+    });
+    const res = await fetchImpl(ENDPOINT4, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
+      body,
+      ...opts.signal ? { signal: opts.signal } : {}
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new ProviderError("openai", res.status, raw, opts.model);
+    const content = JSON.parse(raw).choices?.[0]?.message?.content;
+    try {
+      const parsed = VisionSchema.safeParse(JSON.parse(content ?? "{}"));
+      return parsed.success ? parsed.data : { labels: [], ocrText: "" };
+    } catch {
+      return { labels: [], ocrText: "" };
+    }
+  }
+
+  // src/platform/imageProbe.ts
+  function browserImageProbe() {
+    return async (bytes, mime) => {
+      try {
+        const blob = new Blob([bytes], { type: mime });
+        const bitmap = await createImageBitmap(blob);
+        const result = { decoded: true, width: bitmap.width, height: bitmap.height };
+        bitmap.close();
+        return result;
+      } catch {
+        return { decoded: false, width: 0, height: 0 };
+      }
+    };
   }
 
   // src/services/fixes.ts
@@ -6645,53 +7328,6 @@ ${systemPrompt}`,
       chatOptions(deps)
     );
     return unfence(res.text) || systemPrompt;
-  }
-
-  // src/core/cost.ts
-  var PRICES = {
-    "gpt-5.1": { in: 5e-3, out: 0.015 },
-    "gpt-5.1-mini": { in: 6e-4, out: 24e-4 },
-    "claude-sonnet-4.6": { in: 3e-3, out: 0.015 },
-    "gemini-2.5-pro": { in: 125e-5, out: 5e-3 }
-  };
-  var DEFAULT_PRICE = { in: 5e-3, out: 0.015 };
-  function priceFor(model) {
-    return PRICES[model] ?? DEFAULT_PRICE;
-  }
-  function costForCall(model, inputTokens, outputTokens) {
-    const p = priceFor(model);
-    const ti = Math.max(0, inputTokens);
-    const to = Math.max(0, outputTokens);
-    return ti / 1e3 * p.in + to / 1e3 * p.out;
-  }
-  function roundUsd(n) {
-    return Math.round(n * 1e4) / 1e4;
-  }
-  function estimateRun(input) {
-    const caseCount = Math.max(0, input.caseCount);
-    const ti = Math.max(0, input.avgInputTokens);
-    const to = Math.max(0, input.avgOutputTokens);
-    let calls = 0;
-    let usd = 0;
-    const add = (model, n) => {
-      calls += n;
-      usd += n * costForCall(model, ti, to);
-    };
-    if (input.includeAnalysis) add(input.analyzerModel, 1);
-    if (input.includeEvalGen) add(input.analyzerModel, 1);
-    add(input.targetModel, caseCount);
-    if (input.includeJudge !== false) {
-      const judgeSamples = Math.max(1, Math.floor(input.judgeSamples ?? 1));
-      add(input.judgeModel, caseCount * judgeSamples);
-    }
-    if (input.includeFixes) add(input.analyzerModel, 1);
-    return { totalCalls: calls, estUsd: roundUsd(usd) };
-  }
-  function exceedsCap(estimate, capUsd) {
-    return estimate.estUsd > capUsd;
-  }
-  function formatUsd(usd) {
-    return usd < 0.01 ? `~$${usd.toFixed(4)}` : `~$${usd.toFixed(2)}`;
   }
 
   // src/core/dimensions.ts
@@ -6826,6 +7462,7 @@ ${systemPrompt}`,
   }
   function builderLogHtml(turns) {
     return turns.map((t) => {
+      if (t.note) return `<div class="bnote">\u270E ${esc(t.text)}</div>`;
       const chips = (t.suggestions ?? []).map((s2) => `<button class="sugg" data-fill="${esc(s2)}">${esc(s2)}</button>`).join("");
       const chipWrap = chips ? `<div class="suggrow">${chips}</div>` : "";
       return `<div class="bub ${t.who === "you" ? "you" : "lit"}"><div class="bub-txt">${esc(t.text)}</div>${chipWrap}</div>`;
@@ -6837,7 +7474,7 @@ ${systemPrompt}`,
       const b = band(f.score);
       const name = f.facet.charAt(0).toUpperCase() + f.facet.slice(1);
       const width = Math.max(0, Math.min(10, f.score)) * 10;
-      return `<div class="facet"><div class="fr"><span class="fn"><span>${FACET_ICON[f.facet] ?? "\u2022"}</span>${name}</span><span class="fsc ${b}">${f.score.toFixed(1)}</span></div><div class="fbar"><i class="bar-${b}" style="width:${width}%"></i></div><div class="fnote">${esc(f.finding)}</div></div>`;
+      return `<div class="facet"><div class="fr"><span class="fn"><span>${FACET_ICON[f.facet] ?? "\u2022"}</span>${name}</span><span class="fsc ${b}">${f.score.toFixed(1)}</span></div><div class="fbar"><i class="bar-${b}" data-w="${width}"></i></div><div class="fnote">${esc(f.finding)}</div></div>`;
     }).join("");
   }
   function suggestionsHtml(suggestions) {
@@ -6948,7 +7585,7 @@ ${c?.input ?? ""}
   }
   function axisRowsHtml(rows) {
     return rows.map(
-      (r) => `<div class="dim"><div class="dl"><span>${esc(r.dimension)}</span><span><span class="sa">${r.oldScore.toFixed(1)}</span> \xB7 <span class="sb">${r.newScore.toFixed(1)}</span></span></div><div class="track"><span class="mid"></span><span class="ba" style="width:${r.oldWidthPct}%"></span><span class="bb" style="width:${r.newWidthPct}%"></span></div></div>`
+      (r) => `<div class="dim"><div class="dl"><span>${esc(r.dimension)}</span><span><span class="sa">${r.oldScore.toFixed(1)}</span> \xB7 <span class="sb">${r.newScore.toFixed(1)}</span></span></div><div class="track"><span class="mid"></span><span class="ba" data-w="${r.oldWidthPct}"></span><span class="bb" data-w="${r.newWidthPct}"></span></div></div>`
     ).join("");
   }
   function coverageHtml(rows) {
@@ -7620,7 +8257,10 @@ what language is it written in?` : `{"city":"Paris"}
   var TOOL_CASE_COUNT = 6;
   var area2 = chromeLocal();
   var session = chromeSession();
-  var store = new SessionTabStore(area2, async () => DURABLE_VERSION_KEY);
+  var store = new SessionTabStore(area2, () => activeWorkspaceKey(area2));
+  function rebuildStore() {
+    store = new SessionTabStore(area2, () => activeWorkspaceKey(area2));
+  }
   var state = {
     prompt: "",
     target: parseTarget(DEFAULT_TARGET_VALUE),
@@ -7719,7 +8359,15 @@ what language is it written in?` : `{"city":"Paris"}
       cases: state.cases,
       tools: state.tools,
       suiteKey,
-      casesKey
+      casesKey,
+      // Persist the builder transcript so it survives a panel reopen (ADR: builder UX).
+      ...builderConversation.length > 0 ? {
+        builder: {
+          log: builderLog,
+          conversation: builderConversation.map((m) => ({ role: m.role, content: m.content })),
+          generated: builderGenerated
+        }
+      } : {}
     });
   }
   async function restoreSession() {
@@ -7750,6 +8398,11 @@ what language is it written in?` : `{"city":"Paris"}
         status2.className = "toolstatus ok";
       }
       populateExpectedToolSelect();
+      if (snap.builder) {
+        builderLog = snap.builder.log.map((t) => ({ ...t }));
+        builderConversation = snap.builder.conversation.map((m) => ({ role: m.role, content: m.content }));
+        builderGenerated = snap.builder.generated;
+      }
     }, persistSession);
   }
   function appendCatalogGroups(sel, settings, bare) {
@@ -7803,6 +8456,11 @@ what language is it written in?` : `{"city":"Paris"}
   var html = (id, markup) => {
     el(id).innerHTML = markup;
   };
+  function applyBarWidths(hostId) {
+    for (const bar of Array.from(el(hostId).querySelectorAll("[data-w]"))) {
+      bar.style.width = `${bar.dataset["w"] ?? 0}%`;
+    }
+  }
   function show(step) {
     for (const s2 of VIEWS) el(`view-${s2}`).classList.toggle("hidden", s2 !== step);
     const railEl = el("rail");
@@ -8060,7 +8718,13 @@ what language is it written in?` : `{"city":"Paris"}
   var builderConversation = [];
   var builderGenerated = "";
   var builderPending = false;
-  var BUILDER_GREETING = "Tell me what you want this assistant to do \u2014 its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt.";
+  var BUILDER_GREETING = "Tell me what you want this assistant to do \u2014 its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt. Pick a starting point or describe your own:";
+  var BUILDER_STARTERS = [
+    "A support assistant that triages tickets into categories and returns JSON",
+    "A classifier that labels text by sentiment (positive / neutral / negative)",
+    "A data-extraction assistant that pulls fields from documents into JSON",
+    "A chatbot with a specific persona and tone for a target audience"
+  ];
   var BUILDER_PENDING_BUBBLE = '<div class="bub lit pending" aria-label="litmus is thinking"><span class="dots"><i></i><i></i><i></i></span></div>';
   function renderBuilderLog() {
     html("builderLog", builderLogHtml(builderLog) + (builderPending ? BUILDER_PENDING_BUBBLE : ""));
@@ -8069,9 +8733,20 @@ what language is it written in?` : `{"city":"Paris"}
   }
   function openBuilder() {
     setMessage("");
-    if (builderLog.length === 0) builderLog = [{ who: "litmus", text: BUILDER_GREETING }];
+    if (builderLog.length === 0) builderLog = [{ who: "litmus", text: BUILDER_GREETING, suggestions: BUILDER_STARTERS }];
+    if (builderGenerated) {
+      el("builderResult").value = builderGenerated;
+      el("builderResultWrap").classList.remove("hidden");
+    }
     renderBuilderLog();
+    updateBuilderControls();
     show("generate");
+  }
+  function updateBuilderControls() {
+    const hasInput = el("builderInput").value.trim().length > 0;
+    const hasContext = builderConversation.length > 0 || hasInput;
+    el("builderGenerateBtn").disabled = !hasContext;
+    el("composer").classList.toggle("dim", builderGenerated.length > 0);
   }
   function applyBuilderTurn(turn) {
     builderConversation.push({ role: "assistant", content: JSON.stringify(turn) });
@@ -8081,12 +8756,13 @@ what language is it written in?` : `{"city":"Paris"}
       el("builderUseRow").classList.add("hidden");
     } else {
       builderGenerated = turn.systemPrompt;
-      if (turn.summary) builderLog.push({ who: "litmus", text: turn.summary });
+      if (turn.summary) builderLog.push({ who: "litmus", text: turn.summary, note: true });
       el("builderResult").value = turn.systemPrompt;
       el("builderResultWrap").classList.remove("hidden");
       el("builderUseRow").classList.remove("hidden");
     }
     renderBuilderLog();
+    updateBuilderControls();
   }
   async function runBuilderTurn(forceGenerate) {
     let ctx;
@@ -8103,9 +8779,10 @@ what language is it written in?` : `{"city":"Paris"}
     builderPending = true;
     renderBuilderLog();
     try {
+      const architectModel = resolveArchitectModel(ctx.settings, ctx.target);
       const turn = await builderTurn(
         builderConversation,
-        { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: ctx.target.model },
+        { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: architectModel },
         forceGenerate
       );
       builderPending = false;
@@ -8125,6 +8802,7 @@ what language is it written in?` : `{"city":"Paris"}
     builderConversation.push({ role: "user", content: input });
     el("builderInput").value = "";
     renderBuilderLog();
+    updateBuilderControls();
     return true;
   }
   async function onBuilderSend() {
@@ -8147,6 +8825,21 @@ what language is it written in?` : `{"city":"Paris"}
     void refreshVersionPicker();
     setMessage("Loaded your generated prompt \u2014 analyze or run it.");
   }
+  async function onBuilderUseAndRun() {
+    const text = el("builderResult").value.trim() || builderGenerated;
+    if (!text) return setMessage("Generate a prompt first.", "error");
+    state.prompt = text;
+    el("prompt").value = text;
+    await onQuickRun();
+  }
+  async function onBuilderRefine(kind) {
+    if (!builderGenerated) return;
+    setMessage("");
+    builderConversation.push({ role: "user", content: REFINEMENTS[kind] });
+    builderLog.push({ who: "you", text: `\u21BB ${kind}` });
+    renderBuilderLog();
+    await runBuilderTurn(true);
+  }
   async function onAnalyze() {
     setMessage("");
     state.prompt = el("prompt").value;
@@ -8167,6 +8860,7 @@ what language is it written in?` : `{"city":"Paris"}
       });
       el("analyzeKicker").textContent = `How it reads on ${ctx.target.model}`;
       html("facets", facetRowsHtml(state.analysis.facets));
+      applyBarWidths("facets");
       html("suggest", suggestionsHtml(state.analysis.suggestions));
       persistSession();
       show("analyze");
@@ -8562,6 +9256,38 @@ ${existing}`
     el("runProgress").textContent = `0 / ${total} cases`;
     try {
       const { settings, target, w } = await wiring();
+      const isImage = state.outputType === "image" && state.mode === "quality";
+      let mediaGenerator;
+      let runCases = state.cases;
+      if (isImage) {
+        if (target.provider !== "openai" || mediaModelMismatch("openai", target.model, "image")) {
+          await renderCasesView();
+          setMessage("Choose an OpenAI image model as the target \u2014 e.g. gpt-image-1 or dall-e-3.", "error");
+          return;
+        }
+        const spec = readImageSpec();
+        runCases = state.cases.map((c) => ({ ...c, media: spec }));
+        mediaThumbs.clear();
+        const visionModel = resolveVisionModel(settings);
+        mediaGenerator = makeImageGenerator({
+          generate: generateOpenAIImage,
+          probe: browserImageProbe(),
+          apiKey: w.targetKey,
+          model: target.model,
+          // Content checks (mustContain/text) need a vision description of the image.
+          // Reuses the OpenAI key on the user's vision chat model; a hiccup degrades to
+          // empty (metric gates still evaluate) rather than failing the run.
+          describe: async (bytes, mime) => {
+            try {
+              return await describeOpenAIImage(bytes, mime, { apiKey: w.targetKey, model: visionModel });
+            } catch {
+              return { labels: [], ocrText: "" };
+            }
+          },
+          // Capture bytes for an ephemeral thumbnail (never persisted).
+          onArtifact: (caseId, img) => mediaThumbs.set(caseId, { mime: img.mime, dataUrl: bytesToDataUrl(img.bytes, img.mime) })
+        });
+      }
       const { est, over } = estimateRunCost({
         mode: state.mode,
         cases: state.cases,
@@ -8571,7 +9297,7 @@ ${existing}`
         auxModel: w.auxModel,
         spendCapUsd: settings.spendCapUsd
       });
-      if (over) {
+      if (!isImage && over) {
         await renderCasesView();
         setMessage(
           `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(settings.spendCapUsd)} cap \u2014 trim cases or raise the cap in Settings.`,
@@ -8580,7 +9306,7 @@ ${existing}`
         return;
       }
       el("runStatus").textContent = `Running ${total} cases on ${target.model}\u2026`;
-      const outcome = await runEval(state.prompt, state.cases, {
+      const outcome = await runEval(state.prompt, runCases, {
         target,
         targetProvider: w.targetProvider,
         targetKey: w.targetKey,
@@ -8599,7 +9325,15 @@ ${existing}`
         // Tools belong to tool/agent mode only — never leak a stale catalog into a
         // quality-mode run (bug 3).
         ...toolsForMode(state.mode, state.tools).length ? { tools: toolsForMode(state.mode, state.tools) } : {},
-        ...settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}
+        ...settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {},
+        // Media pack (ADR 0007): inject the generator + a hard mid-run spend gate.
+        ...mediaGenerator ? {
+          mediaGenerator,
+          budget: {
+            capUsd: settings.spendCapUsd,
+            costOf: (c) => c.media ? mediaCostUsd(c.media.kind) : 0
+          }
+        } : {}
       });
       state.outcome = outcome;
       if (state.mode === "tools") {
@@ -8652,6 +9386,26 @@ ${existing}`
       if (runAbort === ac) runAbort = null;
     }
   }
+  function renderThumbs() {
+    const host = el("thumbsHost");
+    host.replaceChildren();
+    const results = state.outcome?.results ?? [];
+    for (const r of results) {
+      const thumb = mediaThumbs.get(r.caseId);
+      if (!thumb) continue;
+      const fig = document.createElement("figure");
+      fig.className = `thumb ${r.passed ? "ok" : "bad"}`;
+      const img = document.createElement("img");
+      img.src = thumb.dataUrl;
+      img.alt = r.caseId;
+      img.loading = "lazy";
+      const cap = document.createElement("figcaption");
+      cap.textContent = `${r.caseId} \xB7 ${r.passed ? "pass" : "fail"} \xB7 ${r.score}/10`;
+      fig.append(img, cap);
+      host.appendChild(fig);
+    }
+    host.classList.toggle("hidden", host.childElementCount === 0);
+  }
   function renderResults(versionIndex) {
     if (!state.outcome) {
       setMessage("No run to show \u2014 run an eval first.", "info");
@@ -8672,6 +9426,7 @@ ${existing}`
     } else {
       rubricNode.classList.add("hidden");
     }
+    renderThumbs();
     html("resultsHost", resultsTableHtml(state.outcome.results, 6, state.cases));
     const toolsMode = state.mode === "tools";
     el("fixBtn").classList.toggle("hidden", toolsMode);
@@ -8794,6 +9549,7 @@ ${existing}`
     el("axisKeyA").textContent = `\u25C0 v${a.index}`;
     el("axisKeyB").textContent = `v${b.index} \u25B6`;
     html("axisHost", axisRowsHtml(buildAxis(aDims, bDims)));
+    applyBarWidths("axisHost");
     axisWrap.classList.remove("hidden");
   }
   async function reportEntries() {
@@ -8837,6 +9593,64 @@ ${existing}`
     void refreshVersionPicker();
   }
   var sessionVersions = [];
+  var NEW_WORKSPACE_SENTINEL = "__new__";
+  async function refreshWorkspacePicker() {
+    const sel = el("workspacePicker");
+    const index = await readIndex(area2);
+    sel.replaceChildren();
+    for (const w of index.workspaces) {
+      const opt = document.createElement("option");
+      opt.value = w.id;
+      opt.textContent = w.name;
+      sel.appendChild(opt);
+    }
+    const create = document.createElement("option");
+    create.value = NEW_WORKSPACE_SENTINEL;
+    create.textContent = "\uFF0B New workspace\u2026";
+    sel.appendChild(create);
+    sel.value = index.activeId;
+    el("workspaceDeleteBtn").disabled = index.workspaces.length <= 1;
+  }
+  async function reloadForWorkspace() {
+    rebuildStore();
+    await refreshWorkspacePicker();
+    await refreshVersionPicker();
+    if (!el("view-versions").classList.contains("hidden")) await showVersions(versionsReturnTo);
+  }
+  async function onWorkspaceChange() {
+    const sel = el("workspacePicker");
+    const value = sel.value;
+    if (value === NEW_WORKSPACE_SENTINEL) {
+      const name = window.prompt("Name the new workspace")?.trim();
+      if (!name) {
+        await refreshWorkspacePicker();
+        return;
+      }
+      await createWorkspace(area2, name, { genId: () => crypto.randomUUID(), now: () => Date.now() });
+      await reloadForWorkspace();
+      return;
+    }
+    await setActive(area2, value);
+    await reloadForWorkspace();
+  }
+  async function onRenameWorkspace() {
+    const index = await readIndex(area2);
+    const current = index.workspaces.find((w) => w.id === index.activeId);
+    const name = window.prompt("Rename workspace", current?.name ?? "")?.trim();
+    if (!name) return;
+    await renameWorkspace(area2, index.activeId, name);
+    await refreshWorkspacePicker();
+  }
+  async function onDeleteWorkspace() {
+    const index = await readIndex(area2);
+    if (index.workspaces.length <= 1) return;
+    const current = index.workspaces.find((w) => w.id === index.activeId);
+    if (!window.confirm(`Delete workspace "${current?.name ?? ""}" and all its version history? This cannot be undone.`)) {
+      return;
+    }
+    await deleteWorkspace(area2, index.activeId);
+    await reloadForWorkspace();
+  }
   async function refreshVersionPicker() {
     sessionVersions = [...await store.getVersions()];
     const wrap = el("versionPickerWrap");
@@ -9040,7 +9854,7 @@ ${existing}`
     state.target = parseTarget(targetSel.value || DEFAULT_TARGET_VALUE);
     await refreshKeyState();
   }
-  var OUTPUT_TYPES = ["text", "image", "voice", "video"];
+  var OUTPUT_TYPES = ["text", "image", "voice", "video", "document"];
   function isOutputType(v2) {
     return OUTPUT_TYPES.includes(v2);
   }
@@ -9048,6 +9862,45 @@ ${existing}`
     for (const c of Array.from(el("packs").children)) {
       c.setAttribute("aria-pressed", String(c.getAttribute("data-pack") === state.outputType));
     }
+    const isImage = state.outputType === "image";
+    el("imagePanel").classList.toggle("hidden", !isImage);
+    if (isImage) {
+      const target = parseTarget(targetValue());
+      const warn = el("imageModelWarn");
+      const openAiImage = target.provider === "openai" && !mediaModelMismatch("openai", target.model, "image");
+      if (!openAiImage) {
+        const why = target.provider !== "openai" ? `The image pack currently supports OpenAI image models only, but the target is ${target.provider}/${target.model}.` : `${target.model} generates text, not images.`;
+        warn.textContent = `${why} Choose an OpenAI image model as the target \u2014 e.g. gpt-image-1 or dall-e-3.`;
+        warn.classList.remove("hidden");
+      } else {
+        warn.classList.add("hidden");
+      }
+    }
+  }
+  var mediaThumbs = /* @__PURE__ */ new Map();
+  function bytesToDataUrl(bytes, mime) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return `data:${mime};base64,${btoa(bin)}`;
+  }
+  function readImageSpec() {
+    const num = (id) => {
+      const v2 = Number(el(id).value);
+      return Number.isFinite(v2) && v2 > 0 ? v2 : void 0;
+    };
+    const list = (id) => {
+      const parts = el(id).value.split(",").map((s2) => s2.trim()).filter(Boolean);
+      return parts.length ? parts : void 0;
+    };
+    const spec = { kind: "image" };
+    return {
+      ...spec,
+      ...num("imgWidth") ? { width: num("imgWidth") } : {},
+      ...num("imgHeight") ? { height: num("imgHeight") } : {},
+      ...num("imgCount") ? { count: num("imgCount") } : {},
+      ...list("imgFormats") ? { formats: list("imgFormats") } : {},
+      ...list("imgMustContain") ? { mustContain: list("imgMustContain") } : {}
+    };
   }
   function wirePacks() {
     el("packs").addEventListener("click", (e) => {
@@ -9074,6 +9927,12 @@ ${existing}`
     el("builderSendBtn").addEventListener("click", () => void onBuilderSend());
     el("builderGenerateBtn").addEventListener("click", () => void onBuilderGenerate());
     el("builderUseBtn").addEventListener("click", () => onBuilderUse());
+    el("builderUseRunBtn").addEventListener("click", () => void onBuilderUseAndRun());
+    el("builderRefineRow").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-refine]");
+      const kind = btn?.dataset["refine"];
+      if (kind) void onBuilderRefine(kind);
+    });
     el("builderInput").addEventListener("keydown", (e) => {
       const ev = e;
       if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
@@ -9081,6 +9940,7 @@ ${existing}`
         void onBuilderSend();
       }
     });
+    el("builderInput").addEventListener("input", () => updateBuilderControls());
     el("builderLog").addEventListener("click", (e) => {
       const chip = e.target.closest(".sugg");
       const fill = chip?.dataset["fill"];
@@ -9088,8 +9948,12 @@ ${existing}`
       const box = el("builderInput");
       box.value = fill;
       box.focus();
+      updateBuilderControls();
     });
     el("versionPicker").addEventListener("change", () => onPickVersion());
+    el("workspacePicker").addEventListener("change", () => void onWorkspaceChange());
+    el("workspaceRenameBtn").addEventListener("click", () => void onRenameWorkspace());
+    el("workspaceDeleteBtn").addEventListener("click", () => void onDeleteWorkspace());
     el("saveKey").addEventListener("click", () => void onSaveKey());
     el("settingsBtn").addEventListener("click", () => void openSettings());
     el("settingsClose").addEventListener("click", () => closeSettings());
@@ -9169,6 +10033,7 @@ ${existing}`
     void (async () => {
       await applyDefaults();
       await restoreSession();
+      await refreshWorkspacePicker();
       await refreshVersionPicker();
     })();
   }

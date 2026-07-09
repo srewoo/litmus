@@ -6,6 +6,8 @@
  * saving a PromptVersion each pass. The "litmus axis" compares versions.
  */
 
+import type { MediaExpectation } from './media';
+
 export type ProviderId = 'openai' | 'anthropic' | 'google';
 
 export interface TargetModel {
@@ -127,6 +129,8 @@ export interface EvalCase {
   readonly toolExpectations?: ToolExpectation;
   /** When set, the case is a multi-turn agent run (ADR 0002). */
   readonly scenario?: Scenario;
+  /** When set, the case generates + evaluates media (image/video/voice/document) (ADR 0007). */
+  readonly media?: MediaExpectation;
 }
 
 /* ---- Run results (quality + speed) ---- */

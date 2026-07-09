@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema, isSafeHttpUrl, ToolExpectationSchema } from './schema';
+import { parseSettings, TargetModelSchema, OpenAIUsageSchema, McpServerConfigSchema, ScenarioSchema, isSafeHttpUrl, ToolExpectationSchema, MediaExpectationSchema } from './schema';
 
 describe('ToolExpectationSchema', () => {
   it('should reject an all-empty expectation that would auto-pass 10/10', () => {
@@ -134,6 +134,21 @@ describe('ScenarioSchema', () => {
     const r = ScenarioSchema.safeParse({ goal: 'g', maxSteps: 3, mcpServerId: 's1' });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.tools).toEqual([]); // tools default to empty for MCP
+  });
+});
+
+describe('MediaExpectationSchema (ADR 0007)', () => {
+  it('should parse each media kind by its discriminant', () => {
+    expect(MediaExpectationSchema.safeParse({ kind: 'image', width: 512, mustContain: ['cube'] }).success).toBe(true);
+    expect(MediaExpectationSchema.safeParse({ kind: 'video', durationSec: 5, maxFlicker: 0.2 }).success).toBe(true);
+    expect(MediaExpectationSchema.safeParse({ kind: 'voice', text: 'hi', maxWer: 0.1 }).success).toBe(true);
+    expect(MediaExpectationSchema.safeParse({ kind: 'document', format: 'pdf', requiredData: ['$4.2M'] }).success).toBe(true);
+  });
+
+  it('should reject an unknown kind and out-of-range values', () => {
+    expect(MediaExpectationSchema.safeParse({ kind: 'hologram' }).success).toBe(false);
+    expect(MediaExpectationSchema.safeParse({ kind: 'voice', maxWer: 2 }).success).toBe(false);
+    expect(MediaExpectationSchema.safeParse({ kind: 'document', format: 'xls' }).success).toBe(false);
   });
 });
 

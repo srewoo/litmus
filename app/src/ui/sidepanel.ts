@@ -7,14 +7,22 @@ import { loadSettings, setKey, saveSettings, deleteAllKeys } from '../platform/s
 import { chromeLocal, chromeSession } from '../platform/chromeStorage';
 import { loadSnapshot, saveSnapshot } from '../platform/sessionCache';
 import { mergeSettings } from './settingsForm';
-import { SessionTabStore, DURABLE_VERSION_KEY } from '../platform/sessionTabStore';
+import { SessionTabStore } from '../platform/sessionTabStore';
+import {
+  activeWorkspaceKey,
+  readIndex,
+  createWorkspace,
+  renameWorkspace,
+  setActive,
+  deleteWorkspace,
+} from '../platform/workspaces';
 import { getProvider } from '../providers';
 import { fetchModels } from '../providers/listModels';
 import type { ProviderId } from '../shared/types';
 import { parseTarget } from './target';
-import { buildWiring } from './providerDeps';
+import { buildWiring, resolveVisionModel, resolveArchitectModel } from './providerDeps';
 import { analyzePrompt } from '../services/analysis';
-import { builderTurn } from '../services/promptBuilder';
+import { builderTurn, REFINEMENTS } from '../services/promptBuilder';
 import { generateCases } from '../services/evalgen';
 import { generateToolCases } from '../services/toolGen';
 import { generateEvalPrompt } from '../services/evalPrompt';
@@ -25,6 +33,13 @@ import type { RubricHealth } from '../core/rubric';
 import { validateRubric } from '../services/rubricValidation';
 import { analyzeCoverage } from '../services/coverage';
 import { runEval } from '../services/run';
+import { makeImageGenerator } from '../services/gen/imageGenerator';
+import { generateOpenAIImage } from '../providers/openaiImage';
+import { describeOpenAIImage } from '../providers/openaiVision';
+import { browserImageProbe } from '../platform/imageProbe';
+import { mediaCostUsd } from '../core/cost';
+import { mediaModelMismatch } from '../providers/mediaCapability';
+import type { ImageExpectation } from '../shared/media';
 import { suggestFixes } from '../services/fixes';
 import type { Fix } from '../services/fixes';
 import { applyFixes } from '../services/applyFixes';
@@ -77,13 +92,24 @@ const TOOL_CASE_COUNT = 6;
 const area = chromeLocal();
 const session = chromeSession();
 
-// Version history is DURABLE (ADR 0004): it lives in chrome.storage.local under
-// one stable namespace, so a user's versions + runs survive tab close and
-// browser restart — the iterative loop (compare v1→vN over time) is the product,
-// and session-scoped history threw it away. The store's mutation queue still
-// serializes the concurrent run-loop writes. (Named/multi-prompt workspaces are a
-// future layer: swap this fixed key for a per-workspace one.)
-const store = new SessionTabStore(area, async () => DURABLE_VERSION_KEY);
+// Version history is DURABLE (ADR 0004) and now PER-WORKSPACE (ADR 0008): it lives
+// in chrome.storage.local under one namespace per named workspace, so testing two
+// different prompts no longer interleaves their histories into one meaningless
+// litmus axis. The key resolver reads the active workspace id (adopting the legacy
+// `litmus:versions:default` blob as a "Default" workspace, so existing history is
+// continuous). The store's mutation queue still serializes concurrent run-loop
+// writes — ADR 0008 swapped only the key resolver, nothing in the spine.
+//
+// `store` is a `let` because switching workspace rebuilds it with a resolver that
+// re-reads the (now different) active id — SessionTabStore memoizes its key, so a
+// switch means a fresh instance. All references read the current binding at call
+// time, so reassignment is safe.
+let store: PersistentStore = new SessionTabStore(area, () => activeWorkspaceKey(area));
+
+/** Rebuild the store so its resolver re-reads the active workspace's key. */
+function rebuildStore(): void {
+  store = new SessionTabStore(area, () => activeWorkspaceKey(area));
+}
 
 interface AppState {
   prompt: string;
@@ -94,8 +120,8 @@ interface AppState {
   activeDimension: string;
   /** What the user is testing: prompt output quality, or tool/agent behavior. */
   mode: 'quality' | 'tools';
-  /** Selected output-type pack. Only 'text' is live today; image/voice/video are roadmap. */
-  outputType: 'text' | 'image' | 'voice' | 'video';
+  /** Selected output-type pack (ADR 0007). 'text' + 'image' are live; voice/video/document are roadmap. */
+  outputType: 'text' | 'image' | 'voice' | 'video' | 'document';
   cases: EvalCase[];
   /** Tool catalog (ADR 0001) sent to the target for tool-test cases. */
   tools: ToolDef[];
@@ -280,6 +306,16 @@ function persistSession(): void {
     tools: state.tools,
     suiteKey,
     casesKey,
+    // Persist the builder transcript so it survives a panel reopen (ADR: builder UX).
+    ...(builderConversation.length > 0
+      ? {
+          builder: {
+            log: builderLog,
+            conversation: builderConversation.map((m) => ({ role: m.role, content: m.content })),
+            generated: builderGenerated,
+          },
+        }
+      : {}),
   });
 }
 
@@ -316,6 +352,12 @@ async function restoreSession(): Promise<void> {
       status.className = 'toolstatus ok';
     }
     populateExpectedToolSelect();
+    // Restore the builder transcript so a reopened panel keeps the interview.
+    if (snap.builder) {
+      builderLog = snap.builder.log.map((t) => ({ ...t }));
+      builderConversation = snap.builder.conversation.map((m) => ({ role: m.role as ChatMessage['role'], content: m.content }));
+      builderGenerated = snap.builder.generated;
+    }
   }, persistSession);
 }
 
@@ -379,6 +421,18 @@ const el = (id: string): HTMLElement => {
 const html = (id: string, markup: string): void => {
   el(id).innerHTML = markup;
 };
+
+/**
+ * Apply data-w bar widths via CSSOM after an innerHTML render. The strict CSP
+ * (ADR 0006, style-src 'self') blocks inline `style=""` attributes — including in
+ * generated HTML — but element.style.* assignments are allowed, so dynamic widths
+ * (facet + litmus-axis bars) are set here instead of inlined in the markup.
+ */
+function applyBarWidths(hostId: string): void {
+  for (const bar of Array.from(el(hostId).querySelectorAll<HTMLElement>('[data-w]'))) {
+    bar.style.width = `${bar.dataset['w'] ?? 0}%`;
+  }
+}
 
 function show(step: View): void {
   for (const s of VIEWS) el(`view-${s}`).classList.toggle('hidden', s !== step);
@@ -701,7 +755,15 @@ let builderGenerated = '';
 let builderPending = false;
 
 const BUILDER_GREETING =
-  "Tell me what you want this assistant to do — its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt.";
+  "Tell me what you want this assistant to do — its job, who it's for, and anything it must always or never do. I'll ask a couple of questions, then write the prompt. Pick a starting point or describe your own:";
+
+/** Starter templates offered as fill-the-box chips on the first turn (reduces blank-box friction). */
+const BUILDER_STARTERS: readonly string[] = [
+  'A support assistant that triages tickets into categories and returns JSON',
+  'A classifier that labels text by sentiment (positive / neutral / negative)',
+  'A data-extraction assistant that pulls fields from documents into JSON',
+  'A chatbot with a specific persona and tone for a target audience',
+];
 
 const BUILDER_PENDING_BUBBLE =
   '<div class="bub lit pending" aria-label="litmus is thinking"><span class="dots"><i></i><i></i><i></i></span></div>';
@@ -715,9 +777,28 @@ function renderBuilderLog(): void {
 /** Open the builder, seeding a fresh interview only the first time (keeps state on revisit). */
 function openBuilder(): void {
   setMessage('');
-  if (builderLog.length === 0) builderLog = [{ who: 'litmus', text: BUILDER_GREETING }];
+  if (builderLog.length === 0) builderLog = [{ who: 'litmus', text: BUILDER_GREETING, suggestions: BUILDER_STARTERS }];
+  // If a prompt was already generated (e.g. restored from a reopened panel), bring
+  // its result panel back so the user can still edit / test / refine it.
+  if (builderGenerated) {
+    (el('builderResult') as HTMLTextAreaElement).value = builderGenerated;
+    el('builderResultWrap').classList.remove('hidden');
+  }
   renderBuilderLog();
+  updateBuilderControls();
   show('generate');
+}
+
+/**
+ * Reflect builder state into the controls: "Generate now" is disabled until there's
+ * something to work from (avoids the empty-click error), and the composer is
+ * de-emphasized once a prompt has been produced (the focus shifts to the result).
+ */
+function updateBuilderControls(): void {
+  const hasInput = (el('builderInput') as HTMLTextAreaElement).value.trim().length > 0;
+  const hasContext = builderConversation.length > 0 || hasInput;
+  (el('builderGenerateBtn') as HTMLButtonElement).disabled = !hasContext;
+  el('composer').classList.toggle('dim', builderGenerated.length > 0);
 }
 
 /** Append a model turn to the transcript + raw conversation; surface a generated prompt. */
@@ -729,12 +810,14 @@ function applyBuilderTurn(turn: PromptBuilderTurn): void {
     el('builderUseRow').classList.add('hidden');
   } else {
     builderGenerated = turn.systemPrompt;
-    if (turn.summary) builderLog.push({ who: 'litmus', text: turn.summary });
+    // Render the summary as an assumptions callout so the user reviews it before testing.
+    if (turn.summary) builderLog.push({ who: 'litmus', text: turn.summary, note: true });
     (el('builderResult') as HTMLTextAreaElement).value = turn.systemPrompt;
     el('builderResultWrap').classList.remove('hidden');
     el('builderUseRow').classList.remove('hidden');
   }
   renderBuilderLog();
+  updateBuilderControls();
 }
 
 async function runBuilderTurn(forceGenerate: boolean): Promise<void> {
@@ -752,9 +835,12 @@ async function runBuilderTurn(forceGenerate: boolean): Promise<void> {
   builderPending = true;
   renderBuilderLog();
   try {
+    // The architect must run on a real chat model — NOT the raw target, which may
+    // be an image model (gpt-image-1 would 400 on chat) or a weak model.
+    const architectModel = resolveArchitectModel(ctx.settings, ctx.target);
     const turn = await builderTurn(
       builderConversation,
-      { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: ctx.target.model },
+      { provider: ctx.w.targetProvider, apiKey: ctx.w.targetKey, model: architectModel },
       forceGenerate,
     );
     builderPending = false;
@@ -776,6 +862,7 @@ function pushBuilderInput(): boolean {
   builderConversation.push({ role: 'user', content: input });
   (el('builderInput') as HTMLTextAreaElement).value = '';
   renderBuilderLog();
+  updateBuilderControls();
   return true;
 }
 
@@ -803,6 +890,29 @@ function onBuilderUse(): void {
   setMessage('Loaded your generated prompt — analyze or run it.');
 }
 
+/** Close the loop: load the generated prompt and jump straight into eval + run. */
+async function onBuilderUseAndRun(): Promise<void> {
+  const text = (el('builderResult') as HTMLTextAreaElement).value.trim() || builderGenerated;
+  if (!text) return setMessage('Generate a prompt first.', 'error');
+  state.prompt = text;
+  (el('prompt') as HTMLTextAreaElement).value = text;
+  await onQuickRun();
+}
+
+/**
+ * Refine the just-generated prompt along one axis (regenerate / stricter / shorter
+ * / JSON) without re-interviewing: append the canned instruction as a user turn and
+ * force a fresh generation.
+ */
+async function onBuilderRefine(kind: keyof typeof REFINEMENTS): Promise<void> {
+  if (!builderGenerated) return;
+  setMessage('');
+  builderConversation.push({ role: 'user', content: REFINEMENTS[kind] });
+  builderLog.push({ who: 'you', text: `↻ ${kind}` });
+  renderBuilderLog();
+  await runBuilderTurn(true);
+}
+
 async function onAnalyze(): Promise<void> {
   setMessage('');
   state.prompt = (el('prompt') as HTMLTextAreaElement).value;
@@ -823,6 +933,7 @@ async function onAnalyze(): Promise<void> {
     });
     el('analyzeKicker').textContent = `How it reads on ${ctx.target.model}`;
     html('facets', facetRowsHtml(state.analysis.facets));
+    applyBarWidths('facets');
     html('suggest', suggestionsHtml(state.analysis.suggestions));
     persistSession();
     show('analyze');
@@ -1281,9 +1392,49 @@ async function onRun(): Promise<void> {
   el('runProgress').textContent = `0 / ${total} cases`;
   try {
     const { settings, target, w } = await wiring();
+
+    // Media (image) pack (ADR 0007): generate + score an artifact per case instead
+    // of judging text. Guard the OpenAI-only first adapter, attach the image
+    // expectation to each case, and gate spend mid-run (media isn't token-priced).
+    const isImage = state.outputType === 'image' && state.mode === 'quality';
+    let mediaGenerator: ReturnType<typeof makeImageGenerator> | undefined;
+    let runCases = state.cases;
+    if (isImage) {
+      if (target.provider !== 'openai' || mediaModelMismatch('openai', target.model, 'image')) {
+        await renderCasesView();
+        setMessage('Choose an OpenAI image model as the target — e.g. gpt-image-1 or dall-e-3.', 'error');
+        return;
+      }
+      const spec = readImageSpec();
+      runCases = state.cases.map((c) => ({ ...c, media: spec }));
+      mediaThumbs.clear();
+      // Content checks need a vision chat model — the user's own selection (judge /
+      // default), NOT a hardcoded one, since the image target can't take image input.
+      const visionModel = resolveVisionModel(settings);
+      mediaGenerator = makeImageGenerator({
+        generate: generateOpenAIImage,
+        probe: browserImageProbe(),
+        apiKey: w.targetKey,
+        model: target.model,
+        // Content checks (mustContain/text) need a vision description of the image.
+        // Reuses the OpenAI key on the user's vision chat model; a hiccup degrades to
+        // empty (metric gates still evaluate) rather than failing the run.
+        describe: async (bytes, mime) => {
+          try {
+            return await describeOpenAIImage(bytes, mime, { apiKey: w.targetKey, model: visionModel });
+          } catch {
+            return { labels: [], ocrText: '' };
+          }
+        },
+        // Capture bytes for an ephemeral thumbnail (never persisted).
+        onArtifact: (caseId, img) => mediaThumbs.set(caseId, { mime: img.mime, dataUrl: bytesToDataUrl(img.bytes, img.mime) }),
+      });
+    }
+
     // Re-estimate against CURRENT settings + cap: the Cases screen only disabled
     // the Run button at render time, so raising samples in Settings afterwards
-    // could otherwise slip an over-cap run through (bug 6).
+    // could otherwise slip an over-cap run through (bug 6). Media runs skip the
+    // token-based estimate — the mid-run budget gate below enforces the cap instead.
     const { est, over } = estimateRunCost({
       mode: state.mode,
       cases: state.cases,
@@ -1293,7 +1444,7 @@ async function onRun(): Promise<void> {
       auxModel: w.auxModel,
       spendCapUsd: settings.spendCapUsd,
     });
-    if (over) {
+    if (!isImage && over) {
       await renderCasesView();
       setMessage(
         `Estimated ${formatUsd(est.estUsd)} exceeds your ${formatUsd(settings.spendCapUsd)} cap — trim cases or raise the cap in Settings.`,
@@ -1302,7 +1453,7 @@ async function onRun(): Promise<void> {
       return;
     }
     el('runStatus').textContent = `Running ${total} cases on ${target.model}…`;
-    const outcome = await runEval(state.prompt, state.cases, {
+    const outcome = await runEval(state.prompt, runCases, {
       target,
       targetProvider: w.targetProvider,
       targetKey: w.targetKey,
@@ -1322,6 +1473,16 @@ async function onRun(): Promise<void> {
       // quality-mode run (bug 3).
       ...(toolsForMode(state.mode, state.tools).length ? { tools: toolsForMode(state.mode, state.tools) } : {}),
       ...(settings.mcpServers?.length ? { mcpServers: settings.mcpServers } : {}),
+      // Media pack (ADR 0007): inject the generator + a hard mid-run spend gate.
+      ...(mediaGenerator
+        ? {
+            mediaGenerator,
+            budget: {
+              capUsd: settings.spendCapUsd,
+              costOf: (c: EvalCase) => (c.media ? mediaCostUsd(c.media.kind) : 0),
+            },
+          }
+        : {}),
     });
     state.outcome = outcome;
 
@@ -1395,6 +1556,34 @@ async function onRun(): Promise<void> {
   }
 }
 
+/**
+ * Render ephemeral thumbnails for a media run (ADR 0007). Reads the per-run
+ * `mediaThumbs` map (populated via the generator's onArtifact); shows nothing for
+ * text/tool/agent runs or historical version views (the map is empty then, since
+ * bytes are never persisted). Built with createElement — the only untrusted string
+ * is the caseId in the caption, set via textContent.
+ */
+function renderThumbs(): void {
+  const host = el('thumbsHost');
+  host.replaceChildren();
+  const results = state.outcome?.results ?? [];
+  for (const r of results) {
+    const thumb = mediaThumbs.get(r.caseId);
+    if (!thumb) continue;
+    const fig = document.createElement('figure');
+    fig.className = `thumb ${r.passed ? 'ok' : 'bad'}`;
+    const img = document.createElement('img');
+    img.src = thumb.dataUrl;
+    img.alt = r.caseId;
+    img.loading = 'lazy';
+    const cap = document.createElement('figcaption');
+    cap.textContent = `${r.caseId} · ${r.passed ? 'pass' : 'fail'} · ${r.score}/10`;
+    fig.append(img, cap);
+    host.appendChild(fig);
+  }
+  host.classList.toggle('hidden', host.childElementCount === 0);
+}
+
 function renderResults(versionIndex: number): void {
   // Results render only makes sense with a run in hand; guard the non-null access
   // so an unexpected navigation (e.g. a restored session) can't crash the view.
@@ -1419,6 +1608,7 @@ function renderResults(versionIndex: number): void {
   } else {
     rubricNode.classList.add('hidden');
   }
+  renderThumbs();
   html('resultsHost', resultsTableHtml(state.outcome!.results, 6, state.cases));
   // "What to fix" generates text-prompt rewrites from quality judging — irrelevant
   // for deterministic tool/agent results. Hide it there and let Versions lead.
@@ -1581,6 +1771,7 @@ function renderAxisPair(): void {
   el('axisKeyA').textContent = `◀ v${a.index}`;
   el('axisKeyB').textContent = `v${b.index} ▶`;
   html('axisHost', axisRowsHtml(buildAxis(aDims, bDims)));
+  applyBarWidths('axisHost');
   axisWrap.classList.remove('hidden');
 }
 
@@ -1632,6 +1823,86 @@ function goCapture(): void {
 
 // Versions saved this session, newest last — backs the capture-screen picker.
 let sessionVersions: PromptVersion[] = [];
+
+/** Sentinel option value in the workspace picker that triggers "create new". */
+const NEW_WORKSPACE_SENTINEL = '__new__';
+
+/**
+ * Populate the header workspace picker (ADR 0008): one option per workspace, the
+ * active one selected, plus a trailing "＋ New workspace…" sentinel. Names are set
+ * via textContent so the DOM escapes them (ADR 0006 — a workspace name is untrusted
+ * user input); they never reach innerHTML. Delete is disabled at a single workspace.
+ */
+async function refreshWorkspacePicker(): Promise<void> {
+  const sel = el('workspacePicker') as HTMLSelectElement;
+  const index = await readIndex(area);
+  sel.replaceChildren();
+  for (const w of index.workspaces) {
+    const opt = document.createElement('option');
+    opt.value = w.id;
+    opt.textContent = w.name;
+    sel.appendChild(opt);
+  }
+  const create = document.createElement('option');
+  create.value = NEW_WORKSPACE_SENTINEL;
+  create.textContent = '＋ New workspace…';
+  sel.appendChild(create);
+  sel.value = index.activeId;
+  (el('workspaceDeleteBtn') as HTMLButtonElement).disabled = index.workspaces.length <= 1;
+}
+
+/**
+ * After switching / creating / deleting a workspace, the store must re-resolve to
+ * the new active key and every history view must reload from it. Rebuilds the
+ * store (SessionTabStore memoizes its key, so a switch needs a fresh instance),
+ * then refreshes the pickers and — if the Versions screen is open — re-renders it.
+ */
+async function reloadForWorkspace(): Promise<void> {
+  rebuildStore();
+  await refreshWorkspacePicker();
+  await refreshVersionPicker();
+  if (!el('view-versions').classList.contains('hidden')) await showVersions(versionsReturnTo);
+}
+
+/** Handle a workspace-picker change: switch to the picked workspace, or create one. */
+async function onWorkspaceChange(): Promise<void> {
+  const sel = el('workspacePicker') as HTMLSelectElement;
+  const value = sel.value;
+  if (value === NEW_WORKSPACE_SENTINEL) {
+    const name = window.prompt('Name the new workspace')?.trim();
+    if (!name) {
+      await refreshWorkspacePicker(); // revert the sentinel selection
+      return;
+    }
+    await createWorkspace(area, name, { genId: () => crypto.randomUUID(), now: () => Date.now() });
+    await reloadForWorkspace();
+    return;
+  }
+  await setActive(area, value);
+  await reloadForWorkspace();
+}
+
+/** Rename the active workspace (header ✎ button). */
+async function onRenameWorkspace(): Promise<void> {
+  const index = await readIndex(area);
+  const current = index.workspaces.find((w) => w.id === index.activeId);
+  const name = window.prompt('Rename workspace', current?.name ?? '')?.trim();
+  if (!name) return;
+  await renameWorkspace(area, index.activeId, name);
+  await refreshWorkspacePicker();
+}
+
+/** Delete the active workspace and its history (header 🗑 button), after confirming. */
+async function onDeleteWorkspace(): Promise<void> {
+  const index = await readIndex(area);
+  if (index.workspaces.length <= 1) return; // guard: never delete the last one from here
+  const current = index.workspaces.find((w) => w.id === index.activeId);
+  if (!window.confirm(`Delete workspace "${current?.name ?? ''}" and all its version history? This cannot be undone.`)) {
+    return;
+  }
+  await deleteWorkspace(area, index.activeId);
+  await reloadForWorkspace();
+}
 
 /**
  * Populate the capture-screen version dropdown. The picker is for switching to a
@@ -1868,7 +2139,7 @@ async function applyDefaults(): Promise<void> {
   await refreshKeyState();
 }
 
-const OUTPUT_TYPES = ['text', 'image', 'voice', 'video'] as const;
+const OUTPUT_TYPES = ['text', 'image', 'voice', 'video', 'document'] as const;
 
 function isOutputType(v: string): v is AppState['outputType'] {
   return (OUTPUT_TYPES as readonly string[]).includes(v);
@@ -1879,6 +2150,62 @@ function applyOutputType(): void {
   for (const c of Array.from(el('packs').children)) {
     c.setAttribute('aria-pressed', String(c.getAttribute('data-pack') === state.outputType));
   }
+  // Image pack (ADR 0007): reveal the spec panel on the Cases step and warn if the
+  // target model isn't a known image generator (fail-open: only warns on a known
+  // mismatch, never on an unknown/new id).
+  const isImage = state.outputType === 'image';
+  el('imagePanel').classList.toggle('hidden', !isImage);
+  if (isImage) {
+    const target = parseTarget(targetValue());
+    const warn = el('imageModelWarn');
+    const openAiImage = target.provider === 'openai' && !mediaModelMismatch('openai', target.model, 'image');
+    if (!openAiImage) {
+      const why =
+        target.provider !== 'openai'
+          ? `The image pack currently supports OpenAI image models only, but the target is ${target.provider}/${target.model}.`
+          : `${target.model} generates text, not images.`;
+      warn.textContent = `${why} Choose an OpenAI image model as the target — e.g. gpt-image-1 or dall-e-3.`;
+      warn.classList.remove('hidden');
+    } else {
+      warn.classList.add('hidden');
+    }
+  }
+}
+
+/**
+ * Ephemeral per-run thumbnails (ADR 0007): caseId → data URL of the generated
+ * image. Populated during a media run via the generator's onArtifact hook and read
+ * by renderResults. Deliberately NOT persisted — image bytes are large and would
+ * blow the chrome.storage.local quota (ADR 0004), so they live only for the run
+ * that's on screen and are cleared at the start of the next run.
+ */
+const mediaThumbs = new Map<string, { mime: string; dataUrl: string }>();
+
+function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  return `data:${mime};base64,${btoa(bin)}`;
+}
+
+/** Read the image expectation from the Cases-step spec inputs (ADR 0007). */
+function readImageSpec(): ImageExpectation & { kind: 'image' } {
+  const num = (id: string): number | undefined => {
+    const v = Number((el(id) as HTMLInputElement).value);
+    return Number.isFinite(v) && v > 0 ? v : undefined;
+  };
+  const list = (id: string): string[] | undefined => {
+    const parts = (el(id) as HTMLInputElement).value.split(',').map((s) => s.trim()).filter(Boolean);
+    return parts.length ? parts : undefined;
+  };
+  const spec: ImageExpectation & { kind: 'image' } = { kind: 'image' };
+  return {
+    ...spec,
+    ...(num('imgWidth') ? { width: num('imgWidth') } : {}),
+    ...(num('imgHeight') ? { height: num('imgHeight') } : {}),
+    ...(num('imgCount') ? { count: num('imgCount') } : {}),
+    ...(list('imgFormats') ? { formats: list('imgFormats') } : {}),
+    ...(list('imgMustContain') ? { mustContain: list('imgMustContain') } : {}),
+  };
 }
 
 function wirePacks(): void {
@@ -1913,6 +2240,12 @@ function init(): void {
   el('builderSendBtn').addEventListener('click', () => void onBuilderSend());
   el('builderGenerateBtn').addEventListener('click', () => void onBuilderGenerate());
   el('builderUseBtn').addEventListener('click', () => onBuilderUse());
+  el('builderUseRunBtn').addEventListener('click', () => void onBuilderUseAndRun());
+  el('builderRefineRow').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('[data-refine]') as HTMLElement | null;
+    const kind = btn?.dataset['refine'] as keyof typeof REFINEMENTS | undefined;
+    if (kind) void onBuilderRefine(kind);
+  });
   el('builderInput').addEventListener('keydown', (e) => {
     const ev = e as KeyboardEvent;
     if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
@@ -1920,6 +2253,7 @@ function init(): void {
       void onBuilderSend();
     }
   });
+  el('builderInput').addEventListener('input', () => updateBuilderControls());
   el('builderLog').addEventListener('click', (e) => {
     const chip = (e.target as HTMLElement).closest('.sugg') as HTMLElement | null;
     const fill = chip?.dataset['fill'];
@@ -1927,8 +2261,12 @@ function init(): void {
     const box = el('builderInput') as HTMLTextAreaElement;
     box.value = fill;
     box.focus();
+    updateBuilderControls();
   });
   el('versionPicker').addEventListener('change', () => onPickVersion());
+  el('workspacePicker').addEventListener('change', () => void onWorkspaceChange());
+  el('workspaceRenameBtn').addEventListener('click', () => void onRenameWorkspace());
+  el('workspaceDeleteBtn').addEventListener('click', () => void onDeleteWorkspace());
   el('saveKey').addEventListener('click', () => void onSaveKey());
   el('settingsBtn').addEventListener('click', () => void openSettings());
   el('settingsClose').addEventListener('click', () => closeSettings());
@@ -2010,6 +2348,7 @@ function init(): void {
   void (async () => {
     await applyDefaults();
     await restoreSession();
+    await refreshWorkspacePicker();
     await refreshVersionPicker();
   })();
 }

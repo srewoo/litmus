@@ -107,6 +107,8 @@ describe('facetRowsHtml', () => {
     expect(html).toContain('bar-hi'); // 8.5 → high band
     expect(html).toContain('bar-lo'); // 4.8 → low band
     expect(html).toContain('bar-mid'); // 6.2 → mid band
+    expect(html).toContain('data-w='); // width via data attr, not inline style (CSP)
+    expect(html).not.toContain('style=');
     expect(html).toContain('&lt;no schema&gt;');
   });
 });
@@ -226,7 +228,9 @@ describe('axisRowsHtml', () => {
     expect(html).toContain('Format');
     expect(html).toContain('4.8');
     expect(html).toContain('9.6');
-    expect(html).toContain('width:48%');
+    // Widths are carried as data-w and applied via CSSOM (CSP style-src 'self' blocks inline style="").
+    expect(html).toContain('data-w="48"');
+    expect(html).not.toContain('style=');
   });
 });
 

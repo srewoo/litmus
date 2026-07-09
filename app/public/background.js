@@ -11,14 +11,17 @@ function disableByDefault() {
 chrome.runtime.onInstalled.addListener(disableByDefault);
 chrome.runtime.onStartup.addListener(disableByDefault);
 
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.action.onClicked.addListener((tab) => {
   if (tab.id === undefined) return;
-  try {
-    await chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true });
-    await chrome.sidePanel.open({ tabId: tab.id });
-  } catch (err) {
-    console.error('[litmus] open side panel:', err);
-  }
+  const tabId = tab.id;
+  // chrome.sidePanel.open() is gesture-gated: it must be called SYNCHRONOUSLY within
+  // the click handler. Awaiting setOptions first (as we used to) spends the user
+  // gesture, so open() then throws "may only be called in response to a user gesture."
+  // Fire setOptions without awaiting, then call open() in the same synchronous turn.
+  chrome.sidePanel
+    .setOptions({ tabId, path: 'sidepanel.html', enabled: true })
+    .catch((err) => console.error('[litmus] set panel options:', err));
+  chrome.sidePanel.open({ tabId }).catch((err) => console.error('[litmus] open side panel:', err));
 });
 
 // Version history is now DURABLE (ADR 0004): it lives under a single stable key

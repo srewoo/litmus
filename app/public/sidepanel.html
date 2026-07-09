@@ -13,6 +13,13 @@
     <header class="head">
       <span class="wordmark"><span class="flask"></span>litmus</span>
       <span class="spacer"></span>
+      <span class="wsbar">
+        <select id="workspacePicker" class="wspick" title="Workspace" aria-label="Workspace"></select>
+        <button class="iconbtn" id="workspaceRenameBtn" title="Rename workspace"
+          aria-label="Rename workspace">✎</button>
+        <button class="iconbtn" id="workspaceDeleteBtn" title="Delete workspace"
+          aria-label="Delete workspace">🗑</button>
+      </span>
       <button class="iconbtn" id="settingsBtn" title="Settings" aria-label="Settings">⚙</button>
     </header>
 
@@ -23,7 +30,7 @@
               class="flask"></span>Settings</span><button class="iconbtn" id="settingsClose"
             aria-label="Close">✕</button></div>
         <div class="sheetbody">
-          <div class="label" style="margin-top:0">API keys — stored only in this browser</div>
+          <div class="label mt0">API keys — stored only in this browser</div>
           <div class="krow"><span class="kname">OpenAI</span><input class="field keyinput" id="keyOpenai"
               type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedOpenai"></span>
           </div>
@@ -33,7 +40,7 @@
           <div class="krow"><span class="kname">Google</span><input class="field keyinput" id="keyGoogle"
               type="password" autocomplete="off" spellcheck="false" /><span class="ksaved" id="savedGoogle"></span>
           </div>
-          <button class="btn ghost block" id="loadModels" style="margin-top:6px">↻ Load models my keys can use</button>
+          <button class="btn ghost block mt6" id="loadModels">↻ Load models my keys can use</button>
 
           <div class="label">Default model</div>
           <div class="select"><span class="sl"><span class="pv">AI</span><select id="defaultModel"></select></span>
@@ -83,7 +90,7 @@
 
           <div class="msg hidden" id="settingsMsg" role="status" aria-live="polite"></div>
           <div class="btn-row">
-            <button class="btn ghost" id="deleteKeys" style="color:var(--coral);border-color:var(--coral-line)">Delete
+            <button class="btn ghost danger" id="deleteKeys">Delete
               all keys</button>
             <button class="btn primary block" id="saveSettings">Save settings</button>
           </div>
@@ -106,26 +113,26 @@
       <p class="sub">Grab the system prompt from whatever console you're on, or paste it.</p>
 
       <div class="keybox onboard hidden" id="nokeyCard">
-        <div class="label" style="margin-top:0">Add an API key to start</div>
-        <p class="hint2" style="margin-top:0">litmus runs on your own key (OpenAI, Anthropic, or Google), stored only in
+        <div class="label mt0">Add an API key to start</div>
+        <p class="hint2 mt0">litmus runs on your own key (OpenAI, Anthropic, or Google), stored only in
           this browser. Add one to begin.</p>
         <button class="btn primary block" id="nokeyOpenSettings">⚙ Open Settings to add a key</button>
       </div>
 
       <div id="versionPickerWrap" class="hidden">
-        <div class="label" style="margin-top:0">Load a version from this tab</div>
+        <div class="label mt0">Load a version from this workspace</div>
         <div class="select"><span class="sl"><span class="pv">⎘</span>
             <select id="versionPicker"></select></span>
         </div>
       </div>
 
-      <div class="btn-row" style="margin:0 0 10px">
+      <div class="btn-row mb10">
         <button class="btn ghost block" id="grabBtn">⤓ Grab from this tab</button>
         <button class="btn ghost block" id="buildBtn">✦ Build one with AI</button>
       </div>
       <textarea class="field" id="prompt" spellcheck="false"
         placeholder="Paste your system prompt here — or grab it from the page, build one with AI, or load an example below."></textarea>
-      <button class="btn ghost block" id="loadExampleBtn" style="margin-top:8px">✎ Load an example prompt</button>
+      <button class="btn ghost block mt8" id="loadExampleBtn">✎ Load an example prompt</button>
 
       <div class="label">What are you testing?</div>
       <div class="modes" id="modes">
@@ -146,16 +153,18 @@
       <div class="chips" id="packs">
         <button class="chip" data-pack="text" aria-pressed="true"><span class="ic">⌨︎</span><span
             class="nm">Text</span></button>
-        <button class="chip" data-pack="image" aria-pressed="false" disabled><span class="ic">◳</span><span
-            class="nm">Image</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="image" aria-pressed="false"><span class="ic">◳</span><span
+            class="nm">Image</span><span class="badge beta">Beta</span></button>
         <button class="chip" data-pack="voice" aria-pressed="false" disabled><span class="ic">◖</span><span
             class="nm">Voice</span><span class="badge soon">Coming soon</span></button>
         <button class="chip" data-pack="video" aria-pressed="false" disabled><span class="ic">▣</span><span
             class="nm">Video</span><span class="badge soon">Coming soon</span></button>
+        <button class="chip" data-pack="document" aria-pressed="false" disabled><span class="ic">▤</span><span
+            class="nm">Document</span><span class="badge soon">Coming soon</span></button>
       </div>
 
       <div class="keybox hidden" id="keybox">
-        <div class="label" style="margin-top:0" id="keyLabel">Your API key (stored only in this browser)</div>
+        <div class="label mt0" id="keyLabel">Your API key (stored only in this browser)</div>
         <div class="keyrow">
           <input class="field keyinput" id="apiKey" type="password" placeholder="sk-…" autocomplete="off"
             spellcheck="false" />
@@ -165,7 +174,7 @@
       </div>
 
       <div class="btn-row"><button class="btn primary block" id="analyzeBtn">Analyze prompt →</button></div>
-      <div class="btn-row" id="quickRunRow" style="margin-top:8px"><button class="btn ghost block" id="quickRunBtn">⚡
+      <div class="btn-row mt8" id="quickRunRow"><button class="btn ghost block" id="quickRunBtn">⚡
           Just run it — auto-generate &amp; score</button></div>
     </main>
 
@@ -173,28 +182,34 @@
     <main class="body hidden" id="view-generate">
       <p class="kicker">Don't have a prompt yet?</p>
       <h1 class="h-lead">Build a system prompt</h1>
-      <p class="sub">Describe what you want the assistant to do. litmus will ask a few questions, then write the prompt
-        — drop it straight into a test run.</p>
+      <p class="sub">Go from an idea to a tested system prompt — litmus writes it, you run it.</p>
 
       <div class="chatlog" id="builderLog"></div>
 
-      <div id="builderResultWrap" class="hidden">
-        <div class="label" style="margin-top:0">Generated system prompt — edit freely</div>
-        <textarea class="field" id="builderResult" spellcheck="false" rows="9"></textarea>
-      </div>
-
-      <div class="composer">
+      <div class="composer" id="composer">
         <textarea class="field" id="builderInput" rows="2" spellcheck="false"
           placeholder="e.g. A support assistant that triages tickets into categories and returns JSON…"></textarea>
-        <div class="btn-row" style="margin-top:9px">
+        <div class="hint2 composer-hint">≈5 questions max — or ✦ Generate now anytime. ⌘/Ctrl + Enter to send.</div>
+        <div class="btn-row mt9">
           <button class="btn ghost" id="builderBackBtn">Back</button>
           <button class="btn ghost" id="builderGenerateBtn">✦ Generate now</button>
-          <button class="btn primary block" id="builderSendBtn">Send →</button>
+          <button class="btn primary block" id="builderSendBtn">Answer →</button>
         </div>
       </div>
 
-      <div class="btn-row hidden" id="builderUseRow">
-        <button class="btn primary block" id="builderUseBtn">Test this prompt →</button>
+      <div id="builderResultWrap" class="hidden">
+        <div class="label">Generated system prompt — edit freely</div>
+        <textarea class="field" id="builderResult" spellcheck="false" rows="9"></textarea>
+        <div class="btn-row refinerow" id="builderRefineRow">
+          <button class="btn ghost sm" data-refine="regenerate">↻ Regenerate</button>
+          <button class="btn ghost sm" data-refine="stricter">Stricter</button>
+          <button class="btn ghost sm" data-refine="shorter">Shorter</button>
+          <button class="btn ghost sm" data-refine="json">JSON output</button>
+        </div>
+        <div class="btn-row" id="builderUseRow">
+          <button class="btn ghost" id="builderUseBtn">Edit in capture</button>
+          <button class="btn primary block" id="builderUseRunBtn">✦ Generate evals &amp; run →</button>
+        </div>
       </div>
     </main>
 
@@ -250,7 +265,7 @@
         <textarea class="field mono toolarea" id="toolDefs" spellcheck="false"
           placeholder='[{"name":"get_weather","description":"Look up weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}}]'></textarea>
         <div class="toolstatus" id="toolDefsStatus"></div>
-        <div class="btn-row" style="margin-top:10px"><button class="btn ghost block" id="genToolCasesBtn">✦ Generate
+        <div class="btn-row mt10"><button class="btn ghost block" id="genToolCasesBtn">✦ Generate
             tool tests</button></div>
 
         <div class="label">Or add one manually</div>
@@ -269,7 +284,7 @@
         </div>
         <div class="label">Required args · JSON (optional)</div>
         <input class="field mono" id="toolRequiredArgs" placeholder='{"city":"Paris"}' autocomplete="off" />
-        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addToolCaseBtn">+ Add tool
+        <div class="btn-row mt11"><button class="btn ghost block" id="addToolCaseBtn">+ Add tool
             test</button></div>
       </details>
 
@@ -282,8 +297,26 @@
         <textarea class="field mono toolarea" id="scenarioJson" spellcheck="false"
           placeholder='{"goal":"What should I wear in Paris today?","maxSteps":4,"successContains":["jacket"],"tools":[{"name":"get_weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}},"results":[{"value":{"tempC":15,"rain":true}}]}]}'></textarea>
         <div class="toolstatus" id="scenarioStatus"></div>
-        <div class="btn-row" style="margin-top:11px"><button class="btn ghost block" id="addScenarioBtn">+ Add agent
+        <div class="btn-row mt11"><button class="btn ghost block" id="addScenarioBtn">+ Add agent
             scenario</button></div>
+      </details>
+
+      <details class="toolpanel hidden" id="imagePanel">
+        <summary>🖼 Image spec <span class="badge beta">Beta</span></summary>
+        <p class="toolhint">Generate an image per case (the case text is the prompt) and check it deterministically:
+          size, format, and count are gates; requested elements are matched against a vision description.
+          Requires an OpenAI image model (e.g. <code>gpt-image-1</code>) as the target.</p>
+        <div class="msg hidden" id="imageModelWarn" role="status"></div>
+        <div class="tworow">
+          <div><div class="label">Width (px)</div><input class="field numin" id="imgWidth" type="number" min="1" placeholder="1024" /></div>
+          <div><div class="label">Height (px)</div><input class="field numin" id="imgHeight" type="number" min="1" placeholder="1024" /></div>
+        </div>
+        <div class="tworow">
+          <div><div class="label">Count</div><input class="field numin" id="imgCount" type="number" min="1" placeholder="1" /></div>
+          <div><div class="label">Formats · comma-sep</div><input class="field" id="imgFormats" placeholder="png" autocomplete="off" /></div>
+        </div>
+        <div class="label">Must contain · comma-sep (needs a vision checker)</div>
+        <input class="field" id="imgMustContain" placeholder="red cube, wooden table" autocomplete="off" />
       </details>
 
       <div class="costbar"><span>Estimated cost</span><span class="costval" id="costLine"></span></div>
@@ -300,8 +333,8 @@
       <p class="kicker">Running · on your key</p>
       <h1 class="h-lead">Generating &amp; judging</h1>
       <div class="spinner"></div>
-      <p class="sub" id="runStatus" style="text-align:center" role="status" aria-live="polite"></p>
-      <p class="sub" id="runProgress" style="text-align:center" aria-live="off"></p>
+      <p class="sub tc" id="runStatus" role="status" aria-live="polite"></p>
+      <p class="sub tc" id="runProgress" aria-live="off"></p>
       <div class="btn-row"><button class="btn ghost block" id="runCancelBtn">Cancel run</button></div>
     </main>
 
@@ -315,6 +348,7 @@
       <div class="label">Speed · measured this run</div>
       <div id="speedHost"></div>
       <div class="rubrichealth hidden" id="rubricHost"></div>
+      <div class="thumbs hidden" id="thumbsHost"></div>
       <div class="label">Cases</div>
       <div id="resultsHost"></div>
       <div class="btn-row">
@@ -376,11 +410,11 @@
           adversarial security scan.</p>
         <div class="tworow">
           <div>
-            <div class="label" style="margin-top:0">Name</div><input class="field" id="mcpName" placeholder="my-server"
+            <div class="label mt0">Name</div><input class="field" id="mcpName" placeholder="my-server"
               autocomplete="off" />
           </div>
           <div>
-            <div class="label" style="margin-top:0">Transport</div>
+            <div class="label mt0">Transport</div>
             <div class="select"><span class="sl"><span class="pv">🔌</span><select id="mcpTransport">
                   <option value="http">Streamable HTTP</option>
                   <option value="sse">SSE</option>
@@ -391,9 +425,9 @@
         <input class="field mono" id="mcpUrl" placeholder="https://host/mcp" autocomplete="off" />
         <div class="label">Authorization header · optional</div>
         <input class="field mono" id="mcpAuth" type="password" placeholder="Bearer …" autocomplete="off" />
-        <div class="btn-row" style="margin-top:10px"><button class="btn primary block" id="mcpConnectBtn">⇄ Connect
+        <div class="btn-row mt10"><button class="btn primary block" id="mcpConnectBtn">⇄ Connect
             &amp; inspect</button></div>
-        <div class="btn-row" style="margin-top:8px"><button class="btn ghost block" id="mcpForgetBtn">Forget saved
+        <div class="btn-row mt8"><button class="btn ghost block" id="mcpForgetBtn">Forget saved
             server</button></div>
       </div>
 
@@ -409,14 +443,14 @@
         </div>
         <div id="mcpCatalog" role="tabpanel" aria-label="MCP catalog items"></div>
 
-        <div class="btn-row" style="margin-top:12px"><button class="btn primary block" id="mcpUseScenarioBtn">🤖 Test an
+        <div class="btn-row mt12"><button class="btn primary block" id="mcpUseScenarioBtn">🤖 Test an
             agent against this server →</button></div>
-        <div class="btn-row" style="margin-top:8px"><button class="btn ghost block" id="mcpScanBtn">🛡 Run security
+        <div class="btn-row mt8"><button class="btn ghost block" id="mcpScanBtn">🛡 Run security
             scan</button></div>
         <div id="mcpSecurity"></div>
       </div>
 
-      <div class="btn-row" style="margin-top:14px"><button class="btn ghost" id="mcpBackBtn">← Back</button></div>
+      <div class="btn-row mt14"><button class="btn ghost" id="mcpBackBtn">← Back</button></div>
       <div class="mcpstatus" id="mcpStatus"></div>
     </main>
 

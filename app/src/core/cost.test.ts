@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateRun, costForCall, exceedsCap, formatUsd, priceFor, DEFAULT_PRICE } from './cost';
+import { estimateRun, costForCall, exceedsCap, formatUsd, priceFor, DEFAULT_PRICE, mediaCostUsd, MEDIA_PRICES, SpendCapExceededError } from './cost';
 
 describe('priceFor', () => {
   it('should fall back to the default for an unknown model', () => {
@@ -80,5 +80,20 @@ describe('formatUsd', () => {
   it('should show cents normally and more precision for tiny amounts', () => {
     expect(formatUsd(0.18)).toBe('~$0.18');
     expect(formatUsd(0.0006)).toBe('~$0.0006');
+  });
+});
+
+describe('media pricing (ADR 0007)', () => {
+  it('should price each modality per artifact, with video the most expensive', () => {
+    expect(mediaCostUsd('image')).toBe(MEDIA_PRICES.image);
+    expect(mediaCostUsd('video')).toBeGreaterThan(mediaCostUsd('image'));
+    expect(mediaCostUsd('video')).toBeGreaterThan(mediaCostUsd('voice'));
+  });
+
+  it('SpendCapExceededError should carry the spent + cap for the UI', () => {
+    const err = new SpendCapExceededError(0.54, 0.1);
+    expect(err.name).toBe('SpendCapExceededError');
+    expect(err.spentUsd).toBe(0.54);
+    expect(err.capUsd).toBe(0.1);
   });
 });

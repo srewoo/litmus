@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveJudgeModel, buildWiring } from './providerDeps';
+import { resolveJudgeModel, resolveVisionModel, resolveArchitectModel, buildWiring } from './providerDeps';
 import { SettingsSchema } from '../shared/schema';
 import type { Provider } from '../providers/types';
 import type { ProviderId, TargetModel } from '../shared/types';
@@ -36,6 +36,55 @@ describe('resolveJudgeModel', () => {
       availableModels: { openai: ['gpt-5.5', 'gpt-4o'] },
     });
     expect(resolveJudgeModel(settings, target)).toBe('gpt-4o');
+  });
+});
+
+describe('resolveVisionModel (image describer, ADR 0007)', () => {
+  it('should use the user-selected judge model when it is a vision chat model', () => {
+    // The reported issue: don't hardcode gpt-4o — use the model the user picked.
+    expect(resolveVisionModel(SettingsSchema.parse({ judgeModel: 'gpt-5-mini' }))).toBe('gpt-5-mini');
+    expect(resolveVisionModel(SettingsSchema.parse({ judgeModel: 'openai/gpt-5.1' }))).toBe('gpt-5.1');
+  });
+
+  it('should skip a judge model that is itself an image generator, and use the default target', () => {
+    const settings = SettingsSchema.parse({
+      judgeModel: 'gpt-image-1', // not a vision chat model
+      defaultTarget: { provider: 'openai', model: 'gpt-5-mini' },
+    });
+    expect(resolveVisionModel(settings)).toBe('gpt-5-mini');
+  });
+
+  it('should fall back to a discovered OpenAI chat model, then gpt-4o', () => {
+    const discovered = SettingsSchema.parse({ availableModels: { openai: ['dall-e-3', 'gpt-5.1-mini'] } });
+    expect(resolveVisionModel(discovered)).toBe('gpt-5.1-mini'); // skips the image model
+    expect(resolveVisionModel(SettingsSchema.parse({}))).toBe('gpt-4o'); // nothing selected → fallback
+  });
+
+  it('should not use a non-OpenAI default target (the describer runs on the OpenAI key)', () => {
+    const settings = SettingsSchema.parse({ defaultTarget: { provider: 'google', model: 'gemini-2.5-pro' } });
+    expect(resolveVisionModel(settings)).toBe('gpt-4o');
+  });
+});
+
+describe('resolveArchitectModel (prompt builder)', () => {
+  it('should use the target when it is a chat model (common case, unchanged)', () => {
+    expect(resolveArchitectModel(SettingsSchema.parse({}), { provider: 'openai', model: 'gpt-5.5' })).toBe('gpt-5.5');
+  });
+
+  it('should NOT run on an image target — fall back to the judge/default chat model', () => {
+    const imageTarget = { provider: 'openai' as const, model: 'gpt-image-1' };
+    // judge override wins
+    expect(resolveArchitectModel(SettingsSchema.parse({ judgeModel: 'gpt-5-mini' }), imageTarget)).toBe('gpt-5-mini');
+    // else default target on the same provider
+    const def = SettingsSchema.parse({ defaultTarget: { provider: 'openai', model: 'gpt-4.1' } });
+    expect(resolveArchitectModel(def, imageTarget)).toBe('gpt-4.1');
+  });
+
+  it('should fall back to a discovered chat model, then the per-provider default', () => {
+    const discovered = SettingsSchema.parse({ availableModels: { openai: ['gpt-image-1', 'gpt-5'] } });
+    expect(resolveArchitectModel(discovered, { provider: 'openai', model: 'gpt-image-1' })).toBe('gpt-5');
+    expect(resolveArchitectModel(SettingsSchema.parse({}), { provider: 'openai', model: 'gpt-image-1' })).toBe('gpt-5.5');
+    expect(resolveArchitectModel(SettingsSchema.parse({}), { provider: 'anthropic', model: 'flux-1' })).toBe('claude-sonnet-4-6');
   });
 });
 

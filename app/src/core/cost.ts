@@ -4,11 +4,45 @@
  * enforce a spend cap before any money is spent on the user's key.
  */
 
+import type { MediaKind } from '../shared/media';
+
 export interface ModelPrice {
   /** USD per 1K input tokens. */
   readonly in: number;
   /** USD per 1K output tokens. */
   readonly out: number;
+}
+
+/**
+ * Rough per-artifact media prices (ADR 0007). Media is priced per output, not per
+ * token — and video is expensive enough that ONE clip can blow a cap, which is why
+ * the run loop must gate spend BETWEEN generations, not only estimate up front.
+ */
+export const MEDIA_PRICES: Record<MediaKind, number> = {
+  image: 0.04,
+  video: 0.5,
+  voice: 0.03,
+  document: 0.02,
+};
+
+export function mediaCostUsd(kind: MediaKind): number {
+  return MEDIA_PRICES[kind];
+}
+
+/**
+ * Thrown by the run loop when the NEXT case would push cumulative spend past the
+ * user's hard cap (ADR 0007 mid-run gate). Like an abort, it propagates out of
+ * `runEval` so the caller skips persistence — a partial, over-budget run is never
+ * saved as a version.
+ */
+export class SpendCapExceededError extends Error {
+  constructor(
+    readonly spentUsd: number,
+    readonly capUsd: number,
+  ) {
+    super(`litmus: run stopped — spend cap $${capUsd} would be exceeded (spent ~$${spentUsd.toFixed(4)})`);
+    this.name = 'SpendCapExceededError';
+  }
 }
 
 /** Rough public prices; fallback applied for unknown models. Update as needed. */

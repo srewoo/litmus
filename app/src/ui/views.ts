@@ -24,12 +24,15 @@ export interface BuilderTurnVM {
   readonly text: string;
   /** Quick-reply chips shown under a litmus question. */
   readonly suggestions?: readonly string[];
+  /** Render as an assumptions callout (the delivery summary) so it stands out for review. */
+  readonly note?: boolean;
 }
 
 /** Render the builder interview transcript. Suggestion chips carry their text in data-fill. */
 export function builderLogHtml(turns: readonly BuilderTurnVM[]): string {
   return turns
     .map((t) => {
+      if (t.note) return `<div class="bnote">✎ ${esc(t.text)}</div>`;
       const chips = (t.suggestions ?? [])
         .map((s) => `<button class="sugg" data-fill="${esc(s)}">${esc(s)}</button>`)
         .join('');
@@ -50,7 +53,7 @@ export function facetRowsHtml(facets: readonly FacetScore[]): string {
       return (
         `<div class="facet"><div class="fr"><span class="fn"><span>${FACET_ICON[f.facet] ?? '•'}</span>${name}</span>` +
         `<span class="fsc ${b}">${f.score.toFixed(1)}</span></div>` +
-        `<div class="fbar"><i class="bar-${b}" style="width:${width}%"></i></div>` +
+        `<div class="fbar"><i class="bar-${b}" data-w="${width}"></i></div>` +
         `<div class="fnote">${esc(f.finding)}</div></div>`
       );
     })
@@ -264,8 +267,8 @@ export function axisRowsHtml(rows: readonly AxisRow[]): string {
         `<div class="dim"><div class="dl"><span>${esc(r.dimension)}</span>` +
         `<span><span class="sa">${r.oldScore.toFixed(1)}</span> · <span class="sb">${r.newScore.toFixed(1)}</span></span></div>` +
         `<div class="track"><span class="mid"></span>` +
-        `<span class="ba" style="width:${r.oldWidthPct}%"></span>` +
-        `<span class="bb" style="width:${r.newWidthPct}%"></span></div></div>`,
+        `<span class="ba" data-w="${r.oldWidthPct}"></span>` +
+        `<span class="bb" data-w="${r.newWidthPct}"></span></div></div>`,
     )
     .join('');
 }

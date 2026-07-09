@@ -10,6 +10,17 @@ import type { StorageArea } from './storage';
 import type { EvalCase, PromptAnalysis, ToolDef } from '../shared/types';
 import type { Dimension } from '../services/dimensionExtract';
 
+/**
+ * Prompt-builder interview transcript, persisted so it survives a panel
+ * close/reopen within a session. Plain serializable shapes (no UI-layer types) to
+ * keep the platform layer independent; the UI maps them back on restore.
+ */
+export interface BuilderSnapshot {
+  readonly log: ReadonlyArray<{ who: 'you' | 'litmus'; text: string; suggestions?: readonly string[]; note?: boolean }>;
+  readonly conversation: ReadonlyArray<{ role: string; content: string }>;
+  readonly generated: string;
+}
+
 export interface SessionSnapshot {
   readonly prompt: string;
   /** The target select's "provider/model" value, so the choice is restored. */
@@ -26,6 +37,8 @@ export interface SessionSnapshot {
   /** Keys gating reuse of the suite / cases; null when not yet generated. */
   readonly suiteKey: string | null;
   readonly casesKey: string | null;
+  /** Prompt-builder transcript (ADR: builder UX). Optional — older snapshots omit it. */
+  readonly builder?: BuilderSnapshot;
 }
 
 const SNAPSHOT_KEY = 'litmus:session-cache';

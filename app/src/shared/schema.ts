@@ -296,6 +296,63 @@ export const ScenarioSchema = z.object({
   mcpServerId: z.string().min(1).optional(),
 });
 
+/* ---- Media evaluator packs (ADR 0007) ---- */
+
+const ImageExpectationSchema = z.object({
+  kind: z.literal('image'),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  formats: z.array(z.string().min(1)).optional(),
+  count: z.number().int().positive().optional(),
+  mustContain: z.array(z.string().min(1)).optional(),
+  mustNotContain: z.array(z.string().min(1)).optional(),
+  text: z.string().optional(),
+  maxRefDistance: z.number().min(0).optional(),
+});
+
+const VideoExpectationSchema = z.object({
+  kind: z.literal('video'),
+  durationSec: z.number().positive().optional(),
+  durationToleranceSec: z.number().min(0).optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  fps: z.number().positive().optional(),
+  formats: z.array(z.string().min(1)).optional(),
+  hasAudio: z.boolean().optional(),
+  minFrames: z.number().int().positive().optional(),
+  maxFlicker: z.number().min(0).max(1).optional(),
+  mustContain: z.array(z.string().min(1)).optional(),
+});
+
+const VoiceExpectationSchema = z.object({
+  kind: z.literal('voice'),
+  text: z.string().optional(),
+  maxWer: z.number().min(0).max(1).optional(),
+  language: z.string().min(1).optional(),
+  minDurationSec: z.number().min(0).optional(),
+  maxDurationSec: z.number().min(0).optional(),
+  voiceId: z.string().min(1).optional(),
+  minVoiceSimilarity: z.number().min(0).max(1).optional(),
+});
+
+const DocumentExpectationSchema = z.object({
+  kind: z.literal('document'),
+  format: z.enum(['pdf', 'pptx']).optional(),
+  pageCount: z.number().int().positive().optional(),
+  sections: z.array(z.string().min(1)).optional(),
+  requiredData: z.array(z.string().min(1)).optional(),
+  minTables: z.number().int().min(0).optional(),
+  noPlaceholders: z.boolean().optional(),
+});
+
+/** A media expectation is a discriminated union on `kind` (ADR 0007). */
+export const MediaExpectationSchema = z.discriminatedUnion('kind', [
+  ImageExpectationSchema,
+  VideoExpectationSchema,
+  VoiceExpectationSchema,
+  DocumentExpectationSchema,
+]);
+
 /* ---- Prompt builder turns (model output) ---- */
 
 export const PromptBuilderTurnSchema = z.discriminatedUnion('kind', [

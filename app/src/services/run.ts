@@ -10,6 +10,8 @@ import type { FetchLike } from '../providers/types';
 import { judgeOutputEnsemble } from './judge';
 import { assertToolCalls, describeToolAssert } from './toolAssert';
 import { runAgent, scoreScenario } from './agentRun';
+import { mediaCaseResult, type MediaGenerator } from './mediaRun';
+import { SpendCapExceededError } from '../core/cost';
 import { providerStep } from './agentStep';
 import { mcpResolver } from './toolResolver';
 import { connectMcp } from '../mcp/client';
@@ -51,6 +53,20 @@ export interface RunDeps {
   readonly concurrency?: number;
   /** Tool catalog available to the target this run (ADR 0001). Sent for tool cases. */
   readonly tools?: readonly ToolDef[];
+  /**
+   * Injected media generation+extraction pipeline (ADR 0007). Required to run
+   * media cases (image/video/voice/document); a media case with no generator is
+   * recorded as a clear failure rather than a crash.
+   */
+  readonly mediaGenerator?: MediaGenerator;
+  /**
+   * Optional hard spend gate (ADR 0007). When set, the run stops BEFORE starting a
+   * case whose cost would push cumulative spend past `capUsd` — essential for
+   * expensive media (one video can blow a cap). `costOf` returns the USD for a
+   * single run of a case; the loop multiplies by `samples`. Throws
+   * SpendCapExceededError, which propagates like an abort so no partial run is saved.
+   */
+  readonly budget?: { readonly capUsd: number; readonly costOf: (evalCase: EvalCase) => number };
   /** Configured MCP servers a scenario may target by id (ADR 0003). */
   readonly mcpServers?: readonly McpServerConfig[];
   /**
@@ -182,6 +198,23 @@ async function runOneCase(systemPrompt: string, evalCase: EvalCase, deps: RunDep
   const threshold = deps.passThreshold ?? DEFAULT_PASS_THRESHOLD;
   const isToolCase = evalCase.toolExpectations !== undefined;
   try {
+    // Media case (ADR 0007): generate the artifact + extract signals via the
+    // injected pipeline, then score with the pure deterministic pack. Independent
+    // of tool/function-calling support, so it routes before that gate.
+    if (evalCase.media) {
+      if (!deps.mediaGenerator) {
+        return {
+          caseId: evalCase.id,
+          output: '',
+          score: 0,
+          passed: false,
+          rationale: `Media case requires a configured media generator for ${evalCase.media.kind}, none provided.`,
+          timing: ZERO_TIMING,
+        };
+      }
+      return await mediaCaseResult(systemPrompt, evalCase, deps.mediaGenerator, deps.signal);
+    }
+
     // Tool-expectation and agent-scenario cases require function calling. A model
     // that doesn't accept the `tools` param would 400 at the provider and be
     // recorded as a generic failure; instead, surface a clear, deterministic
@@ -285,8 +318,17 @@ export async function runEval(
   const samples = positiveCount(deps.samples ?? 1);
   const concurrency = positiveCount(deps.concurrency ?? 1);
   let done = 0;
+  // Mid-run spend gate (ADR 0007). `spent` is read+incremented synchronously (no
+  // await between the check and the increment), so concurrent case starts can't
+  // interleave and overshoot the cap. Throwing propagates out like an abort.
+  let spent = 0;
   const results = await mapWithConcurrency(cases, concurrency, async (evalCase) => {
     throwIfAborted(deps.signal); // don't start new cases once cancelled
+    if (deps.budget) {
+      const cost = Math.max(0, deps.budget.costOf(evalCase)) * samples;
+      if (spent + cost > deps.budget.capUsd) throw new SpendCapExceededError(spent, deps.budget.capUsd);
+      spent += cost;
+    }
     const r = await runCaseSampled(systemPrompt, evalCase, deps, samples, threshold);
     deps.onProgress?.(++done, cases.length);
     return r;
