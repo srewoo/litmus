@@ -5,3 +5,5 @@ app/coverage/
 app/node_modules/
 app/DEVELOPMENT.md
 app/*.zip
+.DS_Store
+**/.DS_Store

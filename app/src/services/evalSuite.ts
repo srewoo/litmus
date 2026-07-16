@@ -1,6 +1,6 @@
 /**
  * Eval suite: extract dimensions, then generate one structured eval prompt per
- * dimension (Athena's per-dimension fan-out). Also combines rubrics into a single
+ * dimension. Also combines rubrics into a single
  * judge instruction for the run. The optional onProgress hook lets the UI report
  * which dimension is generating.
  */

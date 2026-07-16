@@ -1,6 +1,5 @@
 /**
- * Enforcement validation for a generated eval prompt (Athena's 13-check idea,
- * condensed). Pure: scans the text for the structural markers that separate a
+ * Enforcement validation for a generated eval prompt. Pure: scans the text for the structural markers that separate a
  * production-grade rubric from a vague one. Returns a 0–10 score + what's missing.
  */
 export interface EvalPromptCheck {

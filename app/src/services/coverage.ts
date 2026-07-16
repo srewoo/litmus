@@ -1,5 +1,5 @@
 /**
- * Coverage matrix (Athena §14.2). Extracts each instruction in the system prompt
+ * Coverage matrix. Extracts each instruction in the system prompt
  * and maps it to a dimension that tests it — or null (NOT TESTED) to expose gaps.
  */
 import type { ChatMessage, Provider, FetchLike } from '../providers/types';

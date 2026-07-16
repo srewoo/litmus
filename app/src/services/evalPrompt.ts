@@ -1,5 +1,5 @@
 /**
- * Structured evaluation-prompt generator (Athena methodology). Produces a complete
+ * Structured evaluation-prompt generator. Produces a complete
  * LLM-as-judge rubric for ONE dimension, in the SECTION 0–7 format with fail-safe
  * scoring, evidence-first procedure, quantitative thresholds, worked examples, and
  * a quality checklist. Output is prompt TEXT (not JSON).
@@ -9,7 +9,7 @@ import type { Clock } from '../core/stream';
 import { chatOptions } from './opts';
 import { checkEvalPrompt } from '../core/evalPromptCheck';
 
-/** Enforcement bar the refinement loop aims for (≈ Athena's ≥8.5 meta-eval gate). */
+/** Enforcement bar the refinement loop aims for (≈ ≥8.5 meta-eval gate). */
 export const REFINE_TARGET = 8.3;
 
 export interface EvalPromptDeps {

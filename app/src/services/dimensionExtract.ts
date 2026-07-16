@@ -1,5 +1,5 @@
 /**
- * Dimension extraction (Athena step 1). Reads the system prompt and selects the
+ * Dimension extraction. Reads the system prompt and selects the
  * quality dimensions its OUTPUT should be judged on, scaled to the prompt's
  * complexity (simple → 2–3, complex → 5–7). One eval prompt is then generated per
  * dimension. Provider injected; output Zod-validated.

@@ -1648,11 +1648,15 @@ async function onApplyFixesAndEdit(): Promise<void> {
   }
   const done = busy('fixesEditBtn', 'Applying fixes…');
   try {
-    const { w } = await wiring();
+    const { w, settings } = await wiring();
     const revised = await applyFixes(state.prompt, state.fixes, {
       provider: w.judgeProvider,
       apiKey: w.judgeKey,
       model: w.auxModel,
+      target: state.target,
+      cases: state.cases,
+      results: state.outcome?.results,
+      passThreshold: settings.passThreshold,
     });
     state.prompt = revised;
     (el('prompt') as HTMLTextAreaElement).value = revised;
